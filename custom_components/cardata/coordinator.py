@@ -403,10 +403,24 @@ class CardataCoordinator:
                 "trend": self._get_trend(entry.history) if len(entry.history) >= 3 else "stable",
             }
 
-        return {
+        # Driving consumption per speed bracket
+        driving_consumption: dict[str, Any] = {}
+        driving_learned = self._magic_soc._learned_consumption.get(vin)
+        if driving_learned and driving_learned.speed_buckets:
+            for name, bucket in driving_learned.speed_buckets.items():
+                if bucket.get("trip_count", 0) > 0:
+                    driving_consumption[name] = {
+                        "kwh_per_km": round(bucket["kwh_per_km"], 3),
+                        "trip_count": bucket["trip_count"],
+                    }
+
+        result: dict[str, Any] = {
             "current_charging": current_charging,
             "charging_profiles": charging_profiles,
         }
+        if driving_consumption:
+            result["driving_consumption_by_speed"] = driving_consumption
+        return result
 
     def _calculate_std(self, values: list[float]) -> float:
         """Calculate standard deviation of values."""

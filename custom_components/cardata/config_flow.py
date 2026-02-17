@@ -42,7 +42,13 @@ from homeassistant.components import persistent_notification
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult, FlowResultType
 
-from .const import DOMAIN, OPTION_ENABLE_MAGIC_SOC
+from .const import (
+    DOMAIN,
+    OPTION_ENABLE_MAGIC_SOC,
+    OPTION_TRACCAR_TOKEN,
+    OPTION_TRACCAR_URL,
+    OPTION_TRACCAR_VIN_MAP,
+)
 from .utils import redact_vin
 
 _LOGGER = logging.getLogger(__name__)
@@ -377,13 +383,22 @@ class CardataOptionsFlowHandler(config_entries.OptionsFlow):
 
             options = dict(self._config_entry.options)
             options[OPTION_ENABLE_MAGIC_SOC] = user_input[OPTION_ENABLE_MAGIC_SOC]
+            options[OPTION_TRACCAR_URL] = user_input.get(OPTION_TRACCAR_URL, "")
+            options[OPTION_TRACCAR_TOKEN] = user_input.get(OPTION_TRACCAR_TOKEN, "")
+            options[OPTION_TRACCAR_VIN_MAP] = user_input.get(OPTION_TRACCAR_VIN_MAP, "")
             return self.async_create_entry(title="", data=options)
         current = self._config_entry.options.get(OPTION_ENABLE_MAGIC_SOC, False)
+        current_traccar_url = self._config_entry.options.get(OPTION_TRACCAR_URL, "")
+        current_traccar_token = self._config_entry.options.get(OPTION_TRACCAR_TOKEN, "")
+        current_traccar_vin_map = self._config_entry.options.get(OPTION_TRACCAR_VIN_MAP, "")
         return self.async_show_form(
             step_id="action_settings",
             data_schema=vol.Schema(
                 {
                     vol.Optional(OPTION_ENABLE_MAGIC_SOC, default=current): bool,
+                    vol.Optional(OPTION_TRACCAR_URL, default=current_traccar_url): str,
+                    vol.Optional(OPTION_TRACCAR_TOKEN, default=current_traccar_token): str,
+                    vol.Optional(OPTION_TRACCAR_VIN_MAP, default=current_traccar_vin_map): str,
                 }
             ),
         )

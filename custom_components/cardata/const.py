@@ -100,6 +100,18 @@ OPTION_MQTT_KEEPALIVE = "mqtt_keepalive"
 OPTION_DEBUG_LOG = "debug_log"
 OPTION_DIAGNOSTIC_INTERVAL = "diagnostic_log_interval"
 OPTION_ENABLE_MAGIC_SOC = "enable_magic_soc"
+OPTION_TRACCAR_URL = "traccar_url"
+OPTION_TRACCAR_TOKEN = "traccar_token"
+OPTION_TRACCAR_VIN_MAP = "traccar_vin_map"
+
+# Speed brackets for consumption learning (name, lower_kmh, upper_kmh)
+SPEED_BRACKETS: list[tuple[str, float, float]] = [
+    ("traffic_jam", 0.0, 20.0),
+    ("city", 20.0, 60.0),
+    ("suburban", 60.0, 100.0),
+    ("highway", 100.0, 130.0),
+    ("fast_highway", 130.0, float("inf")),
+]
 
 # Error message constants (for consistent error detection)
 ERR_TOKEN_REFRESH_IN_PROGRESS = "Token refresh already in progress"

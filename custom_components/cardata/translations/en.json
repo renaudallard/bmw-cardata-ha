@@ -41,7 +41,10 @@
       "action_settings": {
         "title": "Settings",
         "data": {
-          "enable_magic_soc": "Enable Magic SOC (driving consumption prediction)"
+          "enable_magic_soc": "Enable Magic SOC (driving consumption prediction)",
+          "traccar_url": "Traccar server URL (e.g. http://192.168.1.50:8082)",
+          "traccar_token": "Traccar API token",
+          "traccar_vin_map": "VIN to Traccar device mapping (e.g. WBA1234:MyTracker)"
         }
       }
     },

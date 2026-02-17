@@ -19,11 +19,14 @@ from .const import (
     MIN_LEARNING_TRIP_DISTANCE_KM,
     MIN_VALID_CONSUMPTION,
     REFERENCE_LEARNING_TRIP_KM,
+    SPEED_BRACKETS,
 )
 from .utils import redact_vin
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from .traccar_poller import TraccarPoller
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,6 +38,7 @@ class LearnedConsumption:
     kwh_per_km: float = DEFAULT_CONSUMPTION_KWH_PER_KM
     trip_count: int = 0
     monthly: dict[int, dict[str, Any]] = field(default_factory=dict)
+    speed_buckets: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for persistence."""
@@ -44,6 +48,8 @@ class LearnedConsumption:
         }
         if self.monthly:
             d["monthly"] = {str(k): v for k, v in self.monthly.items()}
+        if self.speed_buckets:
+            d["speed_buckets"] = dict(self.speed_buckets)
         return d
 
     @classmethod
@@ -61,6 +67,11 @@ class LearnedConsumption:
                     obj.monthly[month] = v
             except (TypeError, ValueError):
                 pass
+        speed_raw = data.get("speed_buckets", {})
+        if isinstance(speed_raw, dict):
+            for name, bucket in speed_raw.items():
+                if isinstance(bucket, dict) and "kwh_per_km" in bucket:
+                    obj.speed_buckets[name] = bucket
         return obj
 
 
@@ -81,6 +92,14 @@ class DrivingSession:
     # Trip-level tracking (set once at original anchor, never touched by re-anchors)
     trip_start_soc: float = 0.0  # SOC % at original trip start
     trip_start_mileage: float = 0.0  # Odometer km at original trip start
+    # Speed-bucketed segment tracking (ephemeral, not persisted)
+    accumulated_energy_kwh: float = 0.0  # energy from closed segments
+    segment_start_mileage: float = 0.0  # odometer at current segment start
+    current_segment_bracket: str | None = None  # active speed bracket name
+    current_segment_consumption: float = 0.0  # consumption rate for current bracket
+    last_traccar_speed_kmh: float | None = None
+    last_traccar_update: float = 0.0
+    _speed_segments: list[tuple[str, float]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for persistence."""
@@ -130,6 +149,14 @@ def _haversine_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) ->
     return 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+def _speed_to_bracket(speed_kmh: float) -> str:
+    """Map a speed in km/h to a speed bracket name."""
+    for name, lower, upper in SPEED_BRACKETS:
+        if lower <= speed_kmh < upper:
+            return name
+    return SPEED_BRACKETS[-1][0]
+
+
 class MagicSOCPredictor:
     """Predict SOC drain during driving using distance-based consumption.
 
@@ -164,10 +191,16 @@ class MagicSOCPredictor:
         self._last_reported_mileage: dict[str, float] = {}
         # Callback for when learning data is updated (for persistence)
         self._on_learning_updated: Callable[[], None] | None = None
+        # Optional Traccar poller for speed-bucketed consumption
+        self._traccar_poller: TraccarPoller | None = None
 
     def set_learning_callback(self, callback: Callable[[], None]) -> None:
         """Set callback to be called when learning data is updated."""
         self._on_learning_updated = callback
+
+    def set_traccar_poller(self, poller: TraccarPoller) -> None:
+        """Set optional Traccar poller for speed-bucketed consumption."""
+        self._traccar_poller = poller
 
     def set_vehicle_is_phev(self, vin: str, is_phev: bool) -> None:
         """Mark a vehicle as PHEV or not."""
@@ -336,7 +369,7 @@ class MagicSOCPredictor:
                 )
 
         consumption = self._get_consumption(vin)
-        self._driving_sessions[vin] = DrivingSession(
+        session = DrivingSession(
             anchor_soc=anchor_soc,
             anchor_mileage=current_mileage,
             battery_capacity_kwh=battery_capacity_kwh,
@@ -345,7 +378,9 @@ class MagicSOCPredictor:
             created_at=time.time(),
             trip_start_soc=anchor_soc,
             trip_start_mileage=current_mileage,
+            segment_start_mileage=current_mileage,
         )
+        self._driving_sessions[vin] = session
         _LOGGER.debug(
             "Magic SOC: Anchored driving session for %s at %.1f%% / %.1f km (consumption=%.3f kWh/km)",
             redact_vin(vin),
@@ -353,6 +388,8 @@ class MagicSOCPredictor:
             current_mileage,
             consumption,
         )
+        if self._traccar_poller is not None:
+            self._traccar_poller.start_polling(vin)
 
     def reanchor_driving_session(self, vin: str, new_soc: float, current_mileage: float) -> None:
         """Re-anchor driving session when BMW sends fresh SOC during driving."""
@@ -386,6 +423,12 @@ class MagicSOCPredictor:
         session.gps_distance_km = 0.0
         session.last_gps_lat = None
         session.last_gps_lon = None
+        # Reset speed-bucketed prediction for new anchor, but keep _speed_segments
+        # for learning — segments before re-anchor have correct distances and
+        # contribute to dominant bracket computation at trip end.
+        session.accumulated_energy_kwh = 0.0
+        session.segment_start_mileage = current_mileage
+        # Keep current_segment_bracket — speed hasn't changed, just anchor
         _LOGGER.debug(
             "Magic SOC: Re-anchored %s %.1f%% → %.1f%% at %.1f km (BMW: %d%%)",
             redact_vin(vin),
@@ -401,6 +444,13 @@ class MagicSOCPredictor:
         if session is None:
             _LOGGER.debug("Magic SOC: end_driving_session for %s but no active session", redact_vin(vin))
             return
+
+        # Stop Traccar polling
+        if self._traccar_poller is not None:
+            self._traccar_poller.stop_polling(vin)
+
+        # Close any open speed segment
+        self._close_segment(session)
 
         # Save last prediction for continuity across isMoving flapping
         self._last_driving_predicted_soc[vin] = (session.last_predicted_soc, time.time())
@@ -451,6 +501,19 @@ class MagicSOCPredictor:
                 self._on_learning_updated()
             return
 
+        # Per-bracket learning from collected speed segments
+        if session._speed_segments:
+            total_seg_km = sum(km for _, km in session._speed_segments)
+            if total_seg_km > 0:
+                # Compute distance-weighted average bracket
+                bracket_distances: dict[str, float] = {}
+                for bracket, km in session._speed_segments:
+                    bracket_distances[bracket] = bracket_distances.get(bracket, 0.0) + km
+                dominant_bracket = max(bracket_distances, key=bracket_distances.get)  # type: ignore[arg-type]
+                self._apply_consumption_learning(vin, measured_consumption, distance, bracket_name=dominant_bracket)
+                return
+
+        # Global learning (no speed data or Traccar was offline)
         self._apply_consumption_learning(vin, measured_consumption, distance)
 
     def update_driving_mileage(self, vin: str, mileage: float) -> bool:
@@ -502,6 +565,71 @@ class MagicSOCPredictor:
         session.last_gps_lat = lat
         session.last_gps_lon = lon
 
+    # --- Speed-bucketed tracking ---
+
+    def update_traccar_speed(self, vin: str, speed_kmh: float | None) -> None:
+        """Update current speed from Traccar for speed-bucketed prediction.
+
+        When speed changes bracket, closes the current segment and opens a new one.
+        If speed_kmh is None (Traccar offline), marks speed as unknown — prediction
+        falls back to single-rate for the current segment.
+        """
+        session = self._driving_sessions.get(vin)
+        if session is None:
+            return
+
+        session.last_traccar_speed_kmh = speed_kmh
+        session.last_traccar_update = time.time()
+
+        if speed_kmh is None:
+            # Traccar offline — close current segment if any, fall back to single-rate
+            if session.current_segment_bracket is not None:
+                self._close_segment(session)
+                session.current_segment_bracket = None
+            return
+
+        bracket = _speed_to_bracket(speed_kmh)
+        if bracket == session.current_segment_bracket:
+            return  # same bracket, nothing to do
+
+        was_offline = session.current_segment_bracket is None
+
+        # Bracket changed — close old segment and open new one
+        if session.current_segment_bracket is not None:
+            self._close_segment(session)
+
+        # Traccar came back online — reconstruct accumulated energy from the
+        # current prediction to bridge the gap driven while offline.
+        if was_offline and session.battery_capacity_kwh > 0:
+            soc_drop_pct = session.anchor_soc - session.last_predicted_soc
+            session.accumulated_energy_kwh = max((soc_drop_pct / 100.0) * session.battery_capacity_kwh, 0.0)
+
+        session.current_segment_bracket = bracket
+        session.segment_start_mileage = session.last_mileage if session.last_mileage > 0 else session.anchor_mileage
+        session.current_segment_consumption = self._get_bracket_consumption(vin, bracket)
+
+    def _close_segment(self, session: DrivingSession) -> None:
+        """Close the current speed segment, accumulating its energy."""
+        if session.current_segment_bracket is None:
+            return
+        current_mileage = session.last_mileage if session.last_mileage > 0 else session.anchor_mileage
+        segment_km = max(current_mileage - session.segment_start_mileage, 0.0)
+        if segment_km > 0:
+            session.accumulated_energy_kwh += segment_km * session.current_segment_consumption
+            session._speed_segments.append((session.current_segment_bracket, segment_km))
+
+    def _get_bracket_consumption(self, vin: str, bracket_name: str) -> float:
+        """Get consumption rate for a speed bracket.
+
+        Lookup chain: speed_buckets[bracket] -> monthly -> global learned -> model default.
+        """
+        learned = self._learned_consumption.get(vin)
+        if learned and bracket_name in learned.speed_buckets:
+            bucket = learned.speed_buckets[bracket_name]
+            if bucket.get("trip_count", 0) > 0:
+                return bucket["kwh_per_km"]
+        return self._get_consumption(vin)
+
     # --- Prediction ---
 
     def get_magic_soc(self, vin: str, bmw_soc: float | None, mileage: float | None) -> float | None:
@@ -527,7 +655,18 @@ class MagicSOCPredictor:
             if delta_km == 0.0 and session.gps_distance_km > 0:
                 delta_km = session.gps_distance_km
             if session.battery_capacity_kwh > 0:
-                energy_used = delta_km * session.consumption_kwh_per_km
+                # Speed-bucketed prediction when Traccar is active
+                if session.current_segment_bracket is not None:
+                    current_seg_km = max(
+                        (session.last_mileage if session.last_mileage > 0 else session.anchor_mileage)
+                        - session.segment_start_mileage,
+                        0.0,
+                    )
+                    energy_used = session.accumulated_energy_kwh + (
+                        current_seg_km * session.current_segment_consumption
+                    )
+                else:
+                    energy_used = delta_km * session.consumption_kwh_per_km
                 soc_drop = (energy_used / session.battery_capacity_kwh) * 100.0
                 predicted = session.anchor_soc - soc_drop
                 # Clamp to valid range, monotonically decreasing
@@ -602,6 +741,26 @@ class MagicSOCPredictor:
                 if delta_km > 0:
                     attrs["avg_speed_kmh"] = round(delta_km / elapsed_h, 0)
 
+        # Speed bracket info (Traccar)
+        if session is not None:
+            if session.current_segment_bracket is not None:
+                attrs["speed_bracket"] = session.current_segment_bracket
+            if session.last_traccar_speed_kmh is not None:
+                attrs["traccar_speed_kmh"] = round(session.last_traccar_speed_kmh, 1)
+
+        # Per-bracket learned data
+        learned = self._learned_consumption.get(vin)
+        if learned and learned.speed_buckets:
+            bucket_attrs = {}
+            for name, bucket in learned.speed_buckets.items():
+                if bucket.get("trip_count", 0) > 0:
+                    bucket_attrs[name] = {
+                        "kwh_per_km": round(bucket["kwh_per_km"], 3),
+                        "trip_count": bucket["trip_count"],
+                    }
+            if bucket_attrs:
+                attrs["speed_bucket_consumption"] = bucket_attrs
+
         # SOC data staleness
         ts = self._last_soc_timestamp.get(vin)
         if ts:
@@ -641,7 +800,13 @@ class MagicSOCPredictor:
             return learned.kwh_per_km
         return self._default_consumption.get(vin, DEFAULT_CONSUMPTION_KWH_PER_KM)
 
-    def _apply_consumption_learning(self, vin: str, measured: float, distance_km: float = 0.0) -> None:
+    def _apply_consumption_learning(
+        self,
+        vin: str,
+        measured: float,
+        distance_km: float = 0.0,
+        bracket_name: str | None = None,
+    ) -> None:
         """Apply adaptive EMA learning for driving consumption.
 
         Uses a higher learning rate for the first few trips, converging to
@@ -675,14 +840,27 @@ class MagicSOCPredictor:
         bucket["kwh_per_km"] = bucket["kwh_per_km"] * (1 - monthly_rate) + measured * monthly_rate
         bucket["trip_count"] += 1
 
+        # Speed bracket EMA
+        if bracket_name is not None:
+            speed_bucket = learned.speed_buckets.get(bracket_name)
+            if speed_bucket is None:
+                speed_bucket = {"kwh_per_km": measured, "trip_count": 0}
+                learned.speed_buckets[bracket_name] = speed_bucket
+            sb_rate = max(LEARNING_RATE, 1.0 / (speed_bucket["trip_count"] + 1))
+            if distance_km > 0:
+                sb_rate *= min(distance_km / REFERENCE_LEARNING_TRIP_KM, 1.0)
+            speed_bucket["kwh_per_km"] = speed_bucket["kwh_per_km"] * (1 - sb_rate) + measured * sb_rate
+            speed_bucket["trip_count"] += 1
+
         _LOGGER.info(
-            "Magic SOC: Learned consumption for %s: %.3f -> %.3f kWh/km (trip %d, measured %.3f, rate %.2f)",
+            "Magic SOC: Learned consumption for %s: %.3f -> %.3f kWh/km (trip %d, measured %.3f, rate %.2f%s)",
             redact_vin(vin),
             old,
             learned.kwh_per_km,
             learned.trip_count,
             measured,
             rate,
+            f", bracket={bracket_name}" if bracket_name else "",
         )
         if self._on_learning_updated:
             self._on_learning_updated()

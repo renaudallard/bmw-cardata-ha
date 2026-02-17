@@ -239,6 +239,43 @@ Each EV/PHEV vehicle gets two button entities to reset learned efficiency:
 
 These buttons appear in the vehicle's device page under Configuration entities.
 
+## Speed-Bucketed Consumption Learning (Traccar GPS)
+
+When Magic SOC is enabled you can optionally connect a self-hosted [Traccar](https://www.traccar.org/) GPS server to improve driving prediction accuracy. Instead of one global consumption rate, the integration learns per-speed-bracket rates so city driving and highway driving each get their own value.
+
+### Speed Brackets
+
+| Bracket | Speed Range |
+|---|---|
+| traffic_jam | 0 – 20 km/h |
+| city | 20 – 60 km/h |
+| suburban | 60 – 100 km/h |
+| highway | 100 – 130 km/h |
+| fast_highway | 130+ km/h |
+
+### Setup
+
+In **Settings → Devices & Services → BMW CarData → Configure → Settings**:
+
+1. **Traccar server URL**: e.g. `http://192.168.1.50:8082`
+2. **Traccar API token**: bearer token from Traccar (Settings → Account → Token)
+3. **VIN to device mapping**: comma-separated `VIN:DeviceName` pairs, e.g. `WBA1234567890:MyTracker, WBA9876543210:Tracker2`
+
+### How It Works
+
+- When a trip starts (detected by BMW motion/GPS), the integration starts polling Traccar every 60 seconds for the current speed.
+- Speed readings are mapped to brackets. When the bracket changes, the current distance segment is closed and a new one opens with the bracket-specific consumption rate.
+- At trip end, the dominant bracket's learned rate is updated via EMA.
+- If Traccar is offline during a trip, the integration falls back to the existing single-rate prediction seamlessly. When Traccar comes back online mid-trip, the bucketed prediction resumes from the current energy baseline (no gap).
+
+### Attributes
+
+The Magic SOC sensor gains additional attributes when Traccar is active:
+
+- `speed_bracket`: current bracket name during driving
+- `traccar_speed_kmh`: latest speed from Traccar
+- `speed_bucket_consumption`: per-bracket learned consumption rates
+
 ## Developer Tools Services
 
 Home Assistant's Developer Tools expose helper services for manual API checks:
@@ -305,7 +342,9 @@ The integration is organized into focused modules:
 | `soc_prediction.py` | Charging SOC: trapezoidal energy integration, session management |
 | `soc_types.py` | Charging data types: `LearnedEfficiency`, `PendingSession`, `ChargingSession` |
 | `soc_learning.py` | Charging efficiency EMA learning, session finalization, persistence |
-| `magic_soc.py` | Driving SOC: distance-based consumption prediction, adaptive EMA learning |
+| `magic_soc.py` | Driving SOC: distance-based consumption prediction, speed-bucketed learning via optional Traccar GPS |
+| `traccar_client.py` | Async HTTP client for self-hosted Traccar GPS server |
+| `traccar_poller.py` | Per-VIN polling manager feeding Traccar speed data to Magic SOC |
 | `stream.py` | MQTT connection management, credential hot-swap |
 | `stream_circuit_breaker.py` | Circuit breaker for reconnection rate limiting |
 | `stream_reconnect.py` | Reconnection, unauthorized handling, retry scheduling |

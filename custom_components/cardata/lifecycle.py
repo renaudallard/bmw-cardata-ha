@@ -59,6 +59,9 @@ from .const import (
     OPTION_DIAGNOSTIC_INTERVAL,
     OPTION_ENABLE_MAGIC_SOC,
     OPTION_MQTT_KEEPALIVE,
+    OPTION_TRACCAR_TOKEN,
+    OPTION_TRACCAR_URL,
+    OPTION_TRACCAR_VIN_MAP,
     SOC_LEARNING_STORAGE_KEY,
     SOC_LEARNING_STORAGE_VERSION,
 )
@@ -232,6 +235,52 @@ async def async_setup_cardata(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator._soc_predictor.set_learning_callback(_trigger_save_and_dispatch)
         coordinator._soc_predictor.set_save_callback(_trigger_save)
         coordinator._magic_soc.set_learning_callback(_trigger_save)
+
+        # Set up Traccar poller for speed-bucketed consumption (optional)
+        traccar_url = options.get(OPTION_TRACCAR_URL, "").strip()
+        traccar_token = options.get(OPTION_TRACCAR_TOKEN, "").strip()
+        traccar_poller = None
+        if traccar_url and traccar_token:
+            from .traccar_client import TraccarClient
+            from .traccar_poller import TraccarPoller
+
+            traccar_client = TraccarClient(session, traccar_url, traccar_token)
+            traccar_poller = TraccarPoller(traccar_client, coordinator._magic_soc)
+            coordinator._magic_soc.set_traccar_poller(traccar_poller)
+
+            vin_map_str = options.get(OPTION_TRACCAR_VIN_MAP, "").strip()
+            if vin_map_str:
+                for pair in vin_map_str.split(","):
+                    pair = pair.strip()
+                    if ":" not in pair:
+                        continue
+                    vin_part, device_name = pair.split(":", 1)
+                    vin_part = vin_part.strip()
+                    device_name = device_name.strip()
+                    if not vin_part or not device_name:
+                        continue
+                    try:
+                        device_id = await traccar_client.get_device_id_by_name(device_name)
+                        if device_id is not None:
+                            traccar_poller.set_device_id(vin_part, device_id)
+                            _LOGGER.debug(
+                                "Traccar: mapped VIN %s to device %s (id=%d)",
+                                redact_vin(vin_part),
+                                device_name,
+                                device_id,
+                            )
+                        else:
+                            _LOGGER.warning(
+                                "Traccar: device '%s' not found for VIN %s",
+                                device_name,
+                                redact_vin(vin_part),
+                            )
+                    except Exception as err:
+                        _LOGGER.warning(
+                            "Traccar: failed to resolve device '%s': %s",
+                            device_name,
+                            err,
+                        )
 
         # Restore stored vehicle metadata
         last_poll_ts = data.get("last_telematic_poll")
@@ -407,6 +456,7 @@ async def async_setup_cardata(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             reauth_flow_id=None,
         )
         runtime_data.soc_store = soc_learning_store
+        runtime_data.traccar_poller = traccar_poller
         hass.data[DOMAIN][entry.entry_id] = runtime_data
 
         # Now create refresh loop (runtime is stored, task can read it after first sleep)
@@ -592,6 +642,10 @@ async def async_unload_cardata(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return True
 
     data: CardataRuntimeData = domain_data.pop(entry.entry_id)
+
+    # Stop Traccar poller
+    if data.traccar_poller is not None:
+        data.traccar_poller.stop_all()
 
     # Save SOC session data before shutdown
     if data.soc_store is not None:

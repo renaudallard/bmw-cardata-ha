@@ -71,6 +71,7 @@ class CardataRuntimeData:
     reauth_pending: bool = False
     _handling_unauthorized: bool = False
     soc_store: Store | None = None
+    traccar_poller: Any | None = None
 
     # Rate limit protection (NEW!)
     rate_limit_tracker: RateLimitTracker | None = None
