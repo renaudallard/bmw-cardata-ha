@@ -159,7 +159,7 @@ jobs:
 
       - name: Upload failure snippet
         if: ${{ steps.run_fuzzer.outputs.exit_code != '0' }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: fuzz-failure-${{ matrix.fuzzer }}
           path: fuzz_failure_${{ matrix.fuzzer }}.txt
@@ -178,7 +178,7 @@ jobs:
       issues: write
     steps:
       - name: Download failure snippets
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v7
         continue-on-error: true
         with:
           path: fuzz-failure
