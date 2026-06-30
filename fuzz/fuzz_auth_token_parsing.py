@@ -24,11 +24,18 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 import asyncio
+import logging
 import os
 import sys
 import types
 
 import atheris
+
+# Silence cardata's loggers so the fuzzer does not emit millions of warning
+# lines. The token-polling retry paths log on every 5xx response, and the
+# fuzzer generates a constant stream of them, which otherwise balloons the
+# run output to hundreds of MB and stalls execution past the CI time limit.
+logging.getLogger("cardata").setLevel(logging.CRITICAL)
 
 # Default fuzz duration in seconds (4 hours) - exits cleanly when reached
 DEFAULT_MAX_TIME = 4 * 60 * 60
