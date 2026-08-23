@@ -820,8 +820,20 @@ class CardataCoordinator:
         existing_value = existing_state.value if existing_state is not None else None
         existing_unit = existing_state.unit if existing_state is not None else None
 
+        # Normalize into the stored unit so mi/km readings compare on the same scale (#429)
+        compare_value = value
+        store_unit = unit if unit is not None else existing_unit
+        if (
+            unit is not None
+            and unit != existing_unit
+            and unit in (UnitOfLength.MILES, UnitOfLength.KILOMETERS)
+            and existing_unit in (UnitOfLength.MILES, UnitOfLength.KILOMETERS)
+        ):
+            compare_value = DistanceConverter.convert(value, unit, existing_unit)
+            store_unit = existing_unit
+
         if not isinstance(existing_value, (int, float)):
-            return True, unit, value
+            return True, store_unit, compare_value
 
         if vin in self._mileage_restored_unconfirmed:
             # MQTT reports this descriptor with a real, trustworthy unit, so
@@ -836,19 +848,7 @@ class CardataCoordinator:
             if not is_telematic:
                 self._mileage_restored_unconfirmed.discard(vin)
                 self._mileage_pending_reading.pop(vin, None)
-                return True, unit, value
-
-        # Normalize into the stored unit so mi/km readings compare on the same scale (#429)
-        compare_value = value
-        store_unit = unit if unit is not None else existing_unit
-        if (
-            unit is not None
-            and unit != existing_unit
-            and unit in (UnitOfLength.MILES, UnitOfLength.KILOMETERS)
-            and existing_unit in (UnitOfLength.MILES, UnitOfLength.KILOMETERS)
-        ):
-            compare_value = DistanceConverter.convert(value, unit, existing_unit)
-            store_unit = existing_unit
+                return True, store_unit, compare_value
 
         delta = compare_value - existing_value
         if self._MILEAGE_DECREASE_TOLERANCE <= delta <= self._MAX_PLAUSIBLE_MILEAGE_JUMP:
