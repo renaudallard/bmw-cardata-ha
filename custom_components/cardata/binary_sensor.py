@@ -72,21 +72,18 @@ WINDOW_BOOL_DESCRIPTORS = ("vehicle.body.trunk.window.isOpen",)
 
 MOTION_DESCRIPTORS = ("vehicle.isMoving",)
 
-# Windows and the sunroof are reported as an enum string instead of a boolean,
-# so they arrive on the sensor platform and cannot drive a device trigger or the
-# standard "is anything open" logic. These descriptors get a binary sensor in
-# addition to the raw string sensor, which stays in place because it carries
-# detail that a boolean cannot express (INTERMEDIATE is neither open nor shut).
+# Windows and the sunroof report an enum string rather than a boolean, so they
+# arrive on the sensor platform. They get a binary sensor in addition to it.
 OPENING_STATUS_DESCRIPTORS = {
     "vehicle.cabin.window.row1.driver.status": BinarySensorDeviceClass.WINDOW,
     "vehicle.cabin.window.row1.passenger.status": BinarySensorDeviceClass.WINDOW,
     "vehicle.cabin.window.row2.driver.status": BinarySensorDeviceClass.WINDOW,
     "vehicle.cabin.window.row2.passenger.status": BinarySensorDeviceClass.WINDOW,
-    "vehicle.cabin.sunroof.status": BinarySensorDeviceClass.OPENING,
+    # Home Assistant has no trigger integration for the opening device class.
+    "vehicle.cabin.sunroof.status": BinarySensorDeviceClass.WINDOW,
 }
 
-# The raw string sensor keeps the descriptor catalogue title. The derived binary
-# sensor needs its own title so that the two entities are told apart in the UI.
+# The string sensor keeps the catalogue title, so the binary sensor needs its own.
 OPENING_STATUS_TITLES = {
     "vehicle.cabin.window.row1.driver.status": "Window open (front driver)",
     "vehicle.cabin.window.row1.passenger.status": "Window open (front passenger)",
@@ -102,9 +99,7 @@ OPENING_OPEN_VALUES = frozenset({"OPEN", "INTERMEDIATE"})
 def opening_status_to_bool(value: object) -> bool | None:
     """Map a BMW opening enum string onto a binary sensor state.
 
-    Returns None for anything unrecognised so that an unexpected or newly
-    introduced enum value leaves the sensor untouched. Defaulting to "open"
-    would raise false alarms, and defaulting to "closed" would hide real ones.
+    Unrecognised values return None, which leaves the sensor unchanged.
     """
     if not isinstance(value, str):
         return None
@@ -306,9 +301,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
         state = coordinator.get_state(vin, descriptor)
         if state:
-            # Known opening descriptors always earn an entity. Gating on the
-            # current value would drop the sensor for good if the car happened
-            # to report an unrecognised enum at setup time.
+            # Opening descriptors are known upfront and never carry a boolean.
             if descriptor not in OPENING_STATUS_DESCRIPTORS and not isinstance(state.value, bool):
                 return
         elif not assume_binary and not from_signal:

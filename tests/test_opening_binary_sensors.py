@@ -26,6 +26,7 @@
 """Tests for the window and sunroof opening binary sensors."""
 
 import pytest
+from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 
 from custom_components.cardata.binary_sensor import (
     OPENING_STATUS_DESCRIPTORS,
@@ -98,3 +99,8 @@ class TestOpeningDescriptorTables:
         """Duplicate titles would produce indistinguishable entities."""
         titles = list(OPENING_STATUS_TITLES.values())
         assert len(titles) == len(set(titles))
+
+    def test_every_descriptor_is_reachable_from_a_trigger(self):
+        """Home Assistant ships trigger integrations for window and door, but not opening."""
+        reachable = {BinarySensorDeviceClass.WINDOW, BinarySensorDeviceClass.DOOR}
+        assert set(OPENING_STATUS_DESCRIPTORS.values()) <= reachable
