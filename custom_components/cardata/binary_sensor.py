@@ -96,7 +96,7 @@ OPENING_STATUS_TITLES = {
 }
 
 OPENING_CLOSED_VALUES = frozenset({"CLOSED"})
-OPENING_OPEN_VALUES = frozenset({"OPEN", "INTERMEDIATE", "TILTED", "PARTIALLY_OPEN"})
+OPENING_OPEN_VALUES = frozenset({"OPEN", "INTERMEDIATE"})
 
 
 def opening_status_to_bool(value: object) -> bool | None:

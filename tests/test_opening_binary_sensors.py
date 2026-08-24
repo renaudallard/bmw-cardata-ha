@@ -44,7 +44,7 @@ class TestOpeningStatusToBool:
     def test_closed_is_off(self):
         assert opening_status_to_bool("CLOSED") is False
 
-    @pytest.mark.parametrize("value", ["OPEN", "INTERMEDIATE", "TILTED", "PARTIALLY_OPEN"])
+    @pytest.mark.parametrize("value", ["OPEN", "INTERMEDIATE"])
     def test_open_variants_are_on(self, value):
         assert opening_status_to_bool(value) is True
 
@@ -52,7 +52,7 @@ class TestOpeningStatusToBool:
         assert opening_status_to_bool("  closed  ") is False
         assert opening_status_to_bool("open") is True
 
-    @pytest.mark.parametrize("value", ["UNKNOWN", "NOT_AVAILABLE", "", "INVALID"])
+    @pytest.mark.parametrize("value", ["UNKNOWN", "NOT_AVAILABLE", "", "INVALID", "TILTED", "PARTIALLY_OPEN"])
     def test_unrecognised_values_return_none(self, value):
         """An unknown enum must not resolve to open, because that raises a false alarm."""
         assert opening_status_to_bool(value) is None
