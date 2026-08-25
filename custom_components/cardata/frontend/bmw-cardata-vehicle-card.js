@@ -968,9 +968,13 @@ class BmwCardataVehicleCard extends HTMLElement {
       if (!window.loadCardHelpers) return null;
       const helpers = await window.loadCardHelpers();
       if (!helpers?.createCardElement) return null;
+      // Picture first (default label_mode), fall back to icon mode only when
+      // there's no entity_picture to show - otherwise label_mode:"icon" would
+      // suppress a picture that's actually there.
+      const hasPicture = !!hass?.states?.[trackerEntityId]?.attributes?.entity_picture;
       const mapCard = helpers.createCardElement({
         type: "map",
-        entities: [trackerEntityId],
+        entities: hasPicture ? [trackerEntityId] : [{ entity: trackerEntityId, label_mode: "icon" }],
         default_zoom: 14,
         hours_to_show: 24,
       });

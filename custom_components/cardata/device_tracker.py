@@ -55,12 +55,35 @@ from .const import (
 from .coordinator import CardataCoordinator
 from .entity import CardataEntity
 from .geo_utils import haversine_m
+from .metadata import get_images_directory
 from .runtime import CardataRuntimeData
 from .utils import async_wait_for_bootstrap, redact_vin
 
 _LOGGER = logging.getLogger(__name__)
 
 PARALLEL_UPDATES = 0
+
+# Same folder as the auto-fetched BMW vehicle image (<vin>.png), but a
+# "_marker" suffix so a user-supplied map icon never collides with it.
+_CUSTOM_MARKER_PICTURE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def _find_custom_marker_picture(hass: HomeAssistant, vin: str) -> str | None:
+    """Blocking lookup for a user-supplied www/community/cardata/<vin>_marker.* picture. Run via executor only.
+
+    Matched case-insensitively since VIN casing in a hand-placed filename is
+    an easy typo, and most HA installs run on a case-sensitive filesystem.
+    """
+    images_dir = get_images_directory(hass)
+    if not images_dir.is_dir():
+        return None
+
+    picture_names = {f"{vin.lower()}_marker{ext}" for ext in _CUSTOM_MARKER_PICTURE_EXTENSIONS}
+    for entry in images_dir.iterdir():
+        if entry.is_file() and entry.name.lower() in picture_names:
+            return f"/local/community/cardata/{entry.name}"
+
+    return None
 
 
 async def async_setup_entry(
@@ -151,6 +174,7 @@ class CardataDeviceTracker(CardataEntity, TrackerEntity, RestoreEntity):
         self._base_name = "Location"
         # Update name to include vehicle name prefix
         self._update_name(write_state=False)
+        self._custom_marker_picture: str | None = None
 
         # Current known good coordinates (renamed from _restored for clarity)
         self._current_lat: float | None = None
@@ -171,6 +195,10 @@ class CardataDeviceTracker(CardataEntity, TrackerEntity, RestoreEntity):
     async def async_added_to_hass(self) -> None:
         """Handle entity added to Home Assistant."""
         await super().async_added_to_hass()
+
+        self._custom_marker_picture = await self.hass.async_add_executor_job(
+            _find_custom_marker_picture, self.hass, self._vin
+        )
 
         # CRITICAL: Ensure VIN names are available before restoring state
         # Entity restore can happen before names exist, causing missing prefix
@@ -519,6 +547,18 @@ class CardataDeviceTracker(CardataEntity, TrackerEntity, RestoreEntity):
     def longitude(self) -> float | None:
         """Return last known longitude of the device."""
         return self._current_lon
+
+    @property
+    def entity_picture(self) -> str | None:
+        """Return <vin>_marker.(jpg|jpeg|png|webp), if the user placed one. Default otherwise."""
+        return self._custom_marker_picture or super().entity_picture
+
+    @property
+    def icon(self) -> str | None:
+        """Return the entity's normal default icon, unless a custom marker picture is set."""
+        if self._custom_marker_picture:
+            return None
+        return super().icon
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
