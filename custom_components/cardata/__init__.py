@@ -31,10 +31,20 @@ import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 
+from .const import ALLOWED_VINS_KEY, DOMAIN, VEHICLE_METADATA
 from .lifecycle import PLATFORMS, async_setup_cardata, async_unload_cardata
+from .runtime import async_update_entry_data
+from .utils import redact_vin
 
-__all__ = ["PLATFORMS", "async_setup_entry", "async_unload_entry", "async_remove_entry"]
+__all__ = [
+    "PLATFORMS",
+    "async_setup_entry",
+    "async_unload_entry",
+    "async_remove_entry",
+    "async_remove_config_entry_device",
+]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,3 +62,38 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle removal of config entry."""
     _LOGGER.debug("Config entry %s removed", entry.entry_id)
+
+
+async def async_remove_config_entry_device(
+    hass: HomeAssistant, config_entry: ConfigEntry, device_entry: dr.DeviceEntry
+) -> bool:
+    """Allow deleting a single stale vehicle device from Home Assistant's UI.
+
+    HA hides the delete option for devices owned by an active config entry
+    unless the integration explicitly permits it here. If BMW still reports
+    the VIN and new data arrives later, the coordinator's existing dynamic
+    VIN-claim path recreates the device on its own - nothing to block here.
+    """
+    vin = next((identifier[1] for identifier in device_entry.identifiers if identifier[0] == DOMAIN), None)
+    if vin is None:
+        return True
+
+    runtime = hass.data.get(DOMAIN, {}).get(config_entry.entry_id)
+    if runtime is not None:
+        coordinator = runtime.coordinator
+        coordinator.data.pop(vin, None)
+        coordinator.names.pop(vin, None)
+        coordinator.device_metadata.pop(vin, None)
+        coordinator._allowed_vins.discard(vin)
+
+    allowed = [v for v in config_entry.data.get(ALLOWED_VINS_KEY, []) if v != vin]
+    metadata = dict(config_entry.data.get(VEHICLE_METADATA) or {})
+    metadata.pop(vin, None)
+    await async_update_entry_data(
+        hass,
+        config_entry,
+        {ALLOWED_VINS_KEY: allowed, VEHICLE_METADATA: metadata},
+    )
+
+    _LOGGER.info("Removed vehicle %s from entry %s via device deletion", redact_vin(vin), config_entry.entry_id)
+    return True
