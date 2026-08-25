@@ -76,6 +76,10 @@ And manual API calls, these should be automatically called when needed, but if i
 
 Note that every API call here counts towards your 50/24h quota!
 
+### Removing a stale vehicle
+
+If a vehicle is sold or removed from your BMW account but its device lingers in Home Assistant, delete it directly: **Settings → Devices & services → BMW CarData → the vehicle's device → Delete**. This only removes that one vehicle - other vehicles on the same account/config entry are unaffected. If BMW ever reports that VIN again, it's simply rediscovered like any new vehicle; nothing is permanently blocked.
+
 # <u>Installation Instructions</u>
 
 
@@ -256,6 +260,29 @@ Available configuration options:
 | `leasing_entity` | *(empty)* | Sensor entity for the optional leasing section (see below) |
 | `leasing_tiles` | `[lease_remaining, monthly_budget, projected, cost]` | Which leasing tiles to show, in order. Available: `lease_remaining`, `monthly_budget`, `monthly_average`, `km_balance`, `driven`, `target`, `total`, `lease_start`, `lease_end`, `projected`, `cost` |
 | `language` | `auto` | Card language: `auto` (follow the Home Assistant UI language), `en`, or `de`. Values formatted by Home Assistant (numbers, units, entity states) follow your HA locale regardless. PRs adding languages are welcome — each language is one dictionary block in `bmw-cardata-vehicle-card.js`. |
+
+### Custom Map Marker (optional)
+
+By default, the mini-map (and any other `type: map` card showing the vehicle's
+device tracker) renders a plain marker. To use your own picture instead, drop
+an image in the same folder the integration already stores the vehicle's
+auto-fetched photo:
+
+```
+/config/www/community/cardata/<VIN>_marker.png   (or .jpg / .jpeg / .webp)
+```
+
+The `_marker` suffix keeps it from colliding with the auto-fetched
+`<VIN>.png` vehicle photo — both can coexist. Matching is case-insensitive,
+but the VIN must otherwise match exactly (find it on the vehicle's device
+page). Restart Home Assistant (or reload the integration) after adding the
+file for it to take effect.
+
+If no marker picture is present, the map falls back to the device tracker's
+own icon (`mdi:car` by default, or whatever you've customized it to via
+Settings → Entities → the device tracker → icon override), and only falls
+back further to Home Assistant's default abbreviated-text marker if neither
+is set.
 
 ### Leasing Section (optional)
 
