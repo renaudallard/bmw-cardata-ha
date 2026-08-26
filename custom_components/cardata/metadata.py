@@ -367,6 +367,10 @@ async def async_restore_vehicle_images(
     # Load all PNG files from images directory
     for image_file, file_size in image_files:
         vin = image_file.stem  # Filename without .png extension
+
+        if not is_valid_vin(vin):
+            continue
+
         redacted_vin = redact_vin(vin)
         safe_image_file = redact_vin_in_text(str(image_file))
 
