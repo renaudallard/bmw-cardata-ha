@@ -53,6 +53,7 @@ from .const import (
     MAGIC_SOC_DESCRIPTOR,
     PREDICTED_SOC_DESCRIPTOR,
 )
+from .message_utils import is_within_catalogue_limits
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -224,7 +225,9 @@ def convert_value_for_unit(
     return value
 
 
-def validate_restored_state(state_value: str | None, unit: str | None) -> float | str | None:
+def validate_restored_state(
+    state_value: str | None, unit: str | None, descriptor: str | None = None
+) -> float | str | None:
     """Validate a restored state value is usable.
 
     Returns the validated value (float for numeric, str otherwise) or None if invalid.
@@ -243,6 +246,11 @@ def validate_restored_state(state_value: str | None, unit: str | None) -> float 
             # Reject NaN and infinity
             if not math.isfinite(numeric):
                 _LOGGER.debug("Rejecting non-finite restored value: %s", state_value)
+                return None
+            # A value BMW's catalogue says cannot occur was never a reading, so
+            # do not carry it across a restart either.
+            if descriptor is not None and not is_within_catalogue_limits(descriptor, numeric):
+                _LOGGER.debug("Rejecting out of range restored value for %s: %s", descriptor, state_value)
                 return None
             # Return as float so it compares correctly with live numeric values
             return numeric
