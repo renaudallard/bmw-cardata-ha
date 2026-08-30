@@ -66,7 +66,11 @@ from .device_info import (
     restore_descriptor_state as _di_restore_descriptor_state,
 )
 from .magic_soc import MagicSOCPredictor
-from .message_utils import normalize_boolean_value, sanitize_timestamp_string
+from .message_utils import (
+    is_within_catalogue_limits,
+    normalize_boolean_value,
+    sanitize_timestamp_string,
+)
 from .motion_detection import MotionDetector
 from .pending_manager import PendingManager, UpdateBatcher
 from .soc_prediction import SOCPredictor
@@ -693,6 +697,15 @@ class CardataCoordinator:
             raw_timestamp = descriptor_payload.get("timestamp")
             timestamp = sanitize_timestamp_string(raw_timestamp)
             if value is None:
+                continue
+
+            if not is_within_catalogue_limits(descriptor, value):
+                _LOGGER.debug(
+                    "Ignoring out of range %s for VIN %s: %s",
+                    descriptor,
+                    redacted_vin,
+                    value,
+                )
                 continue
 
             if descriptor == "vehicle.vehicle.preConditioning.activity":

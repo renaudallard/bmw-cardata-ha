@@ -128,7 +128,7 @@ class CardataSensor(CardataEntity, RestoreEntity, SensorEntity):
             last_state = await self.async_get_last_state()
             if last_state and last_state.state not in ("unknown", "unavailable"):
                 unit = last_state.attributes.get("unit_of_measurement")
-                validated_state = validate_restored_state(last_state.state, unit)
+                validated_state = validate_restored_state(last_state.state, unit, self._descriptor)
                 if validated_state is None:
                     # Invalid restored state - skip restoration
                     last_state = None

@@ -29,6 +29,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .const import DESCRIPTOR_VALUE_LIMITS
+
 # Descriptors that should be interpreted as boolean values
 BOOLEAN_DESCRIPTORS = frozenset(
     {
@@ -111,3 +113,21 @@ def normalize_boolean_value(descriptor: str, value: Any) -> Any:
             return BOOLEAN_VALUE_MAP[normalized]
 
     return value
+
+
+def is_within_catalogue_limits(descriptor: str, value: Any) -> bool:
+    """Check a value against the range BMW's data catalogue declares for it.
+
+    Descriptors with no declared range, and values that are not numbers, are
+    accepted unchanged. Only a number that BMW's own documentation says cannot
+    occur is rejected.
+    """
+    limits = DESCRIPTOR_VALUE_LIMITS.get(descriptor)
+    if limits is None:
+        return True
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return True
+    minimum, maximum = limits
+    return minimum <= numeric <= maximum

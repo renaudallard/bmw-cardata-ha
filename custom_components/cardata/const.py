@@ -43,6 +43,16 @@ DESC_FUEL_LEVEL = "vehicle.drivetrain.fuelSystem.level"
 DESC_TRAVELLED_DISTANCE = "vehicle.vehicle.travelledDistance"
 DESC_TRIP_HVSOC = "vehicle.trip.segment.end.drivetrain.batteryManagement.hvSoc"
 DESC_SOC_DISPLAYED = "vehicle.powertrain.electric.battery.stateOfCharge.displayed"
+DESC_AVG_ELECTRIC_CONSUMPTION = "vehicle.drivetrain.avgElectricRangeConsumption"
+
+# Ranges BMW's own data catalogue declares for a descriptor. A value outside
+# one of these is not a reading, it is a placeholder: every Neue Klasse car
+# seen so far reports the same 2777774 kWh/100km average consumption against
+# a documented 0-100 kWh/100km. Numbers outside the declared range are
+# dropped rather than shown.
+DESCRIPTOR_VALUE_LIMITS: dict[str, tuple[float, float]] = {
+    DESC_AVG_ELECTRIC_CONSUMPTION: (0.0, 100.0),
+}
 
 # Charge port descriptors, used to tell one plug-in apart from the next
 DESC_CHARGING_PORT_STATUS = "vehicle.body.chargingPort.status"
