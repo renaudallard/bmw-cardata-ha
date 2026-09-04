@@ -41,6 +41,22 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
+def _reconnect_abandoned(manager: CardataStreamManager) -> bool:
+    """Tell whether a reconnect that slept should give up.
+
+    An async_stop() or an entry unload can happen while we wait, and the
+    config entry may be gone by the time we wake up.
+    """
+    if manager._intentional_disconnect:
+        return True
+    if manager._entry_id:
+        from .const import DOMAIN
+
+        if manager._entry_id not in manager.hass.data.get(DOMAIN, {}):
+            return True
+    return False
+
+
 async def async_reconnect(manager: CardataStreamManager) -> None:
     """Handle MQTT reconnection with token refresh and backoff."""
     from .stream import ConnectionState
@@ -76,9 +92,16 @@ async def async_reconnect(manager: CardataStreamManager) -> None:
     manager._intentional_disconnect = False
 
     if manager._circuit_breaker.check():
+        # The breaker only resets when something checks it again, and the
+        # scheduled retries refuse to run while it is open, so returning here
+        # would leave the stream down until the next token refresh. Wait the
+        # cooldown out instead.
+        cooldown = (manager._circuit_breaker.remaining_seconds or 0) + 1
         if debug_enabled():
-            _LOGGER.debug("Skipping MQTT reconnect due to open circuit breaker")
-        return
+            _LOGGER.debug("Waiting %s seconds for the MQTT circuit breaker to reset", cooldown)
+        await asyncio.sleep(cooldown)
+        if _reconnect_abandoned(manager):
+            return
 
     # Phase 2: Token refresh (no lock needed - client is stopped)
     # Skip token refresh when using a custom MQTT broker (no BMW auth needed)
@@ -116,14 +139,8 @@ async def async_reconnect(manager: CardataStreamManager) -> None:
 
     await asyncio.sleep(wait_time)
 
-    # Re-check after sleep — async_stop or entry unload may have occurred
-    if manager._intentional_disconnect:
+    if _reconnect_abandoned(manager):
         return
-    if manager._entry_id:
-        from .const import DOMAIN
-
-        if manager._entry_id not in manager.hass.data.get(DOMAIN, {}):
-            return
 
     # Phase 4: Start the client (requires lock)
     try:
