@@ -68,7 +68,56 @@ DOOR_DESCRIPTORS = (
     "vehicle.cabin.door.row2.passenger.isOpen",
 )
 
+WINDOW_BOOL_DESCRIPTORS = ("vehicle.body.trunk.window.isOpen",)
+
 MOTION_DESCRIPTORS = ("vehicle.isMoving",)
+
+# Windows and the sunroof report an enum string rather than a boolean, so they
+# arrive on the sensor platform. They get a binary sensor in addition to it.
+OPENING_STATUS_DESCRIPTORS = {
+    "vehicle.cabin.window.row1.driver.status": BinarySensorDeviceClass.WINDOW,
+    "vehicle.cabin.window.row1.passenger.status": BinarySensorDeviceClass.WINDOW,
+    "vehicle.cabin.window.row2.driver.status": BinarySensorDeviceClass.WINDOW,
+    "vehicle.cabin.window.row2.passenger.status": BinarySensorDeviceClass.WINDOW,
+    # Home Assistant has no trigger integration for the opening device class.
+    "vehicle.cabin.sunroof.status": BinarySensorDeviceClass.WINDOW,
+}
+
+# The string sensor keeps the catalogue title, so the binary sensor needs its own.
+OPENING_STATUS_TITLES = {
+    "vehicle.cabin.window.row1.driver.status": "Window open (front driver)",
+    "vehicle.cabin.window.row1.passenger.status": "Window open (front passenger)",
+    "vehicle.cabin.window.row2.driver.status": "Window open (rear driver)",
+    "vehicle.cabin.window.row2.passenger.status": "Window open (rear passenger)",
+    "vehicle.cabin.sunroof.status": "Sunroof open",
+}
+
+OPENING_CLOSED_VALUES = frozenset({"CLOSED"})
+OPENING_OPEN_VALUES = frozenset({"OPEN", "INTERMEDIATE"})
+
+
+def opening_status_to_bool(value: object) -> bool | None:
+    """Map a BMW opening enum string onto a binary sensor state.
+
+    Unrecognised values return None, which leaves the sensor unchanged.
+    """
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().upper()
+    if normalized in OPENING_CLOSED_VALUES:
+        return False
+    if normalized in OPENING_OPEN_VALUES:
+        return True
+    return None
+
+
+def coerce_binary_value(descriptor: str, value: object) -> bool | None:
+    """Return the boolean a binary sensor must show, or None if unusable."""
+    if descriptor in OPENING_STATUS_DESCRIPTORS:
+        return opening_status_to_bool(value)
+    if isinstance(value, bool):
+        return value
+    return None
 
 
 class CardataBinarySensor(CardataEntity, RestoreEntity, BinarySensorEntity):
@@ -84,6 +133,17 @@ class CardataBinarySensor(CardataEntity, RestoreEntity, BinarySensorEntity):
             self._attr_device_class = BinarySensorDeviceClass.DOOR
         elif descriptor in MOTION_DESCRIPTORS:
             self._attr_device_class = BinarySensorDeviceClass.MOVING
+        elif descriptor in WINDOW_BOOL_DESCRIPTORS:
+            self._attr_device_class = BinarySensorDeviceClass.WINDOW
+        elif descriptor in OPENING_STATUS_DESCRIPTORS:
+            self._attr_device_class = OPENING_STATUS_DESCRIPTORS[descriptor]
+
+    def _format_name(self) -> str:
+        """Prefer the binary-specific title for derived opening sensors."""
+        title = OPENING_STATUS_TITLES.get(self._descriptor)
+        if title:
+            return title
+        return super()._format_name()
 
     async def async_added_to_hass(self) -> None:
         """Restore state and subscribe to updates."""
@@ -120,10 +180,11 @@ class CardataBinarySensor(CardataEntity, RestoreEntity, BinarySensorEntity):
         # If we restored state, check for fresh data to ensure we're not stuck with old value
         if restored_state:
             state = self._coordinator.get_state(self.vin, self.descriptor)
-            if state and isinstance(state.value, bool):
+            fresh_value = coerce_binary_value(self.descriptor, state.value) if state else None
+            if fresh_value is not None:
                 # Fresh data available - use it (may differ from restored value)
-                if self._attr_is_on != state.value:
-                    self._attr_is_on = state.value
+                if self._attr_is_on != fresh_value:
+                    self._attr_is_on = fresh_value
                     self.schedule_update_ha_state()
 
         # Always do initial update to get current state from coordinator
@@ -156,10 +217,12 @@ class CardataBinarySensor(CardataEntity, RestoreEntity, BinarySensorEntity):
         # updating, since it's never re-invoked just because some other
         # descriptor later pushes the count over the threshold.
         state = self._coordinator.get_state(vin, descriptor)
-        if not state or not isinstance(state.value, bool):
+        if not state:
             return
 
-        new_value = state.value
+        new_value = coerce_binary_value(descriptor, state.value)
+        if new_value is None:
+            return
 
         # SMART FILTERING: Check if sensor's current state differs from new value
         current_value = getattr(self, "_attr_is_on", None)
@@ -191,6 +254,13 @@ class CardataBinarySensor(CardataEntity, RestoreEntity, BinarySensorEntity):
                 return "mdi:circle-outline"
             else:
                 return "mdi:circle"
+
+        # Window and sunroof openings - dynamic icon based on state
+        if self.descriptor and self.descriptor in OPENING_STATUS_DESCRIPTORS:
+            is_open = getattr(self, "_attr_is_on", False)
+            if is_open:
+                return "mdi:car-door"
+            return "mdi:car-door-lock"
 
         # Motion sensors - dynamic icon based on state
         if self.descriptor and self.descriptor in MOTION_DESCRIPTORS:
@@ -231,7 +301,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
         state = coordinator.get_state(vin, descriptor)
         if state:
-            if not isinstance(state.value, bool):
+            # Opening descriptors are known upfront and never carry a boolean.
+            if descriptor not in OPENING_STATUS_DESCRIPTORS and not isinstance(state.value, bool):
                 return
         elif not assume_binary and not from_signal:
             return
@@ -252,6 +323,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         ensure_entity(vin, descriptor, from_signal=True)
 
     entry.async_on_unload(async_dispatcher_connect(hass, coordinator.signal_new_binary, async_handle_new_binary_sensor))
+
+    # Opening descriptors carry a string, so they announce themselves on the
+    # sensor signal rather than the binary one.
+    async def async_handle_new_opening_sensor(vin: str, descriptor: str) -> None:
+        if descriptor in OPENING_STATUS_DESCRIPTORS:
+            ensure_entity(vin, descriptor, from_signal=True)
+
+    entry.async_on_unload(
+        async_dispatcher_connect(hass, coordinator.signal_new_sensor, async_handle_new_opening_sensor)
+    )
 
     # Note: We don't subscribe to signal_update for entity creation here.
     # - signal_new_binary handles new boolean descriptors
@@ -276,3 +357,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # Add binary sensors from coordinator state
     for vin, descriptor in coordinator.iter_descriptors(binary=True):
         ensure_entity(vin, descriptor)
+
+    # Add the derived opening sensors, whose source values are strings
+    for vin, descriptor in coordinator.iter_descriptors(binary=False):
+        if descriptor in OPENING_STATUS_DESCRIPTORS:
+            ensure_entity(vin, descriptor)
