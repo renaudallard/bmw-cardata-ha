@@ -278,13 +278,6 @@ class CardataBinarySensor(CardataEntity, RestoreEntity, BinarySensorEntity):
             else:
                 return "mdi:circle"
 
-        # Window and sunroof openings - dynamic icon based on state
-        if self.descriptor and self.descriptor in OPENING_STATUS_DESCRIPTORS:
-            is_open = getattr(self, "_attr_is_on", False)
-            if is_open:
-                return "mdi:car-door"
-            return "mdi:car-door-lock"
-
         # Motion sensors - dynamic icon based on state
         if self.descriptor and self.descriptor in MOTION_DESCRIPTORS:
             is_moving = getattr(self, "_attr_is_on", False)
