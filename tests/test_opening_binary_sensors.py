@@ -31,7 +31,9 @@ from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 from custom_components.cardata.binary_sensor import (
     OPENING_STATUS_DESCRIPTORS,
     OPENING_STATUS_TITLES,
+    OPENING_UNIQUE_ID_SUFFIX,
     coerce_binary_value,
+    descriptor_from_unique_id,
     opening_status_to_bool,
 )
 
@@ -87,6 +89,21 @@ class TestCoerceBinaryValue:
 
     def test_unknown_descriptor_rejects_string(self):
         assert coerce_binary_value("vehicle.something.else", "OPEN") is None
+
+
+class TestUniqueIdSuffix:
+    """Tests for the unique_id the derived sensors carry."""
+
+    def test_suffix_maps_back_to_the_descriptor(self):
+        for descriptor in OPENING_STATUS_DESCRIPTORS:
+            assert descriptor_from_unique_id(f"{descriptor}{OPENING_UNIQUE_ID_SUFFIX}") == descriptor
+
+    def test_boolean_descriptor_is_left_alone(self):
+        assert descriptor_from_unique_id(DOOR_DESCRIPTOR) == DOOR_DESCRIPTOR
+
+    def test_unsuffixed_opening_descriptor_is_left_alone(self):
+        """Only the suffixed form belongs to a derived sensor."""
+        assert descriptor_from_unique_id(WINDOW_DESCRIPTOR) == WINDOW_DESCRIPTOR
 
 
 class TestOpeningDescriptorTables:
