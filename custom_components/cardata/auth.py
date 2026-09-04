@@ -148,8 +148,13 @@ async def refresh_tokens_for_entry(
     manager: CardataStreamManager,
     container_manager: CardataContainerManager | None = None,
     buffer_seconds: int = TOKEN_EXPIRY_BUFFER_SECONDS,
+    force: bool = False,
 ) -> None:
     """Refresh tokens and update entry data.
+
+    Set force when the tokens have been rejected by BMW. The local expiry
+    data only says when we expect the token to die, it does not say whether
+    BMW still accepts it, so the expiry check has to be skipped in that case.
 
     CRITICAL: This function ONLY handles token refresh.
     Container management is handled separately to avoid API hammering.
@@ -174,10 +179,13 @@ async def refresh_tokens_for_entry(
         # Lock is now acquired - use try/finally immediately to ensure release
         try:
             # double check if token still needs refresh
-            expired, seconds_left = is_token_expired(entry, buffer_seconds)
-            if not expired:
-                _LOGGER.debug("Token was refreshed by another caller; skipping (valid for %s seconds)", seconds_left)
-                return
+            if not force:
+                expired, seconds_left = is_token_expired(entry, buffer_seconds)
+                if not expired:
+                    _LOGGER.debug(
+                        "Token was refreshed by another caller; skipping (valid for %s seconds)", seconds_left
+                    )
+                    return
             await _do_token_refresh(entry, session, manager, container_manager, hass)
         finally:
             lock.release()
@@ -303,11 +311,16 @@ async def handle_stream_error(
                 try:
                     _LOGGER.debug("Attempting token refresh after auth failure")
 
+                    # BMW refused the credentials we hold, so refresh them even
+                    # when they still look valid here. Without force the refresh
+                    # is skipped for the whole 45 minutes between two proactive
+                    # refreshes and we reconnect with the same rejected token.
                     await refresh_tokens_for_entry(
                         entry,
                         runtime.session,
                         runtime.stream,
                         runtime.container_manager,
+                        force=True,
                     )
 
                     # Success! Reset the unauthorized flags
@@ -403,11 +416,14 @@ async def async_manual_refresh_tokens(hass: HomeAssistant, entry: ConfigEntry) -
     if runtime is None:
         raise CardataAuthError("Integration runtime not ready")
 
+    # The user asked for new tokens, so give them new tokens instead of
+    # silently keeping the ones that are already in trouble.
     await refresh_tokens_for_entry(
         entry,
         runtime.session,
         runtime.stream,
         runtime.container_manager,
+        force=True,
     )
 
 
