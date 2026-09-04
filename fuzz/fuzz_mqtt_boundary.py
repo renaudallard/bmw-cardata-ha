@@ -79,6 +79,7 @@ def _install_paho_stub() -> None:
     client.MQTTMessage = MQTTMessage
     client.MQTTv311 = 4
     client.MQTT_ERR_SUCCESS = 0
+    client.MQTT_ERR_NO_CONN = 4
     client.MQTT_ERR_CONN_REFUSED = 5
     client.MQTT_ERR_CONN_LOST = 7
     client.MQTT_ERR_KEEPALIVE = 16

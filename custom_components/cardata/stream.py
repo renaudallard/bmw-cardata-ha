@@ -335,22 +335,28 @@ class CardataStreamManager:
         self._intentional_disconnect = True
         self._connection_state = ConnectionState.DISCONNECTING
 
-        disconnect_future: asyncio.Future[None] | None = None
         client = self._client
         self._client = None
         if client is not None:
             loop = asyncio.get_running_loop()
-            disconnect_future = loop.create_future()
+            disconnect_future: asyncio.Future[None] = loop.create_future()
             self._disconnect_future = disconnect_future
             userdata = getattr(client, "_userdata", None)
             if isinstance(userdata, dict):
                 userdata["reconnect"] = False
             try:
-                client.disconnect()
+                rc = client.disconnect()
             except Exception as err:  # pragma: no cover - defensive logging
                 if debug_enabled():
                     _LOGGER.debug("Error disconnecting BMW MQTT client: %s", err)
-            if disconnect_future is not None:
+                rc = mqtt.MQTT_ERR_NO_CONN
+            if rc == mqtt.MQTT_ERR_NO_CONN:
+                # The socket was already gone, usually because we are cleaning
+                # up after a connection loss. No DISCONNECT went out and
+                # on_disconnect has already fired, so nothing will ever
+                # complete the future and waiting just burns the timeout.
+                self._disconnect_future = None
+            else:
                 try:
                     await asyncio.wait_for(disconnect_future, timeout=5)
                 except TimeoutError:
