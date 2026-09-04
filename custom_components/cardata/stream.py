@@ -425,12 +425,18 @@ class CardataStreamManager:
             topic = f"{self._gcid}/+"
             client_id = self._gcid
 
+        # reconnect_on_failure=False: after a lost connection paho would run its
+        # own reconnect loop in the network thread, in parallel with ours and
+        # without the backoff, the circuit breaker or the token refresh. Both
+        # would then connect under the same client id, and the broker drops the
+        # older session whenever the newer one arrives.
         client = mqtt.Client(
             client_id=client_id,
             clean_session=True,
             userdata={"topic": topic},
             protocol=mqtt.MQTTv311,
             transport="tcp",
+            reconnect_on_failure=False,
         )
         if debug_enabled():
             _LOGGER.debug(
