@@ -62,7 +62,7 @@ Please try to post only issues relevant to the integration itself on the [Issues
 
 ### Configure button actions
 On the integration main page, there is now a "Configure" button. You can use it to:
-- **Refresh authentication tokens** (will reload integration, might also need HA restart in some problem cases)
+- **Refresh authentication tokens** (always requests a new set of tokens from BMW, even when the current ones have not expired yet; will reload integration, might also need HA restart in some problem cases)
 - **Start device authorization again** (redo the whole auth flow)
 - **MQTT Broker** (switch stream source to a custom broker, including TLS mode and topic prefix)
 - **Reset telemetry container** (delete and recreate the BMW telemetry container)
