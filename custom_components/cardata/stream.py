@@ -143,6 +143,9 @@ class CardataStreamManager:
         # Threading event for connection synchronization (avoids global socket timeout)
         self._connect_event: threading.Event | None = None
         self._connect_rc: int | None = None
+        # CONNACK code of the last attempt, set only from the connect callback
+        # so it always holds a broker verdict and never a socket error code.
+        self._last_connack_rc: int | None = None
         # Circuit breaker persistence serialization
         self._persist_lock = asyncio.Lock()
 
@@ -227,6 +230,10 @@ class CardataStreamManager:
                 await async_update_entry_data(self.hass, entry, {"circuit_breaker_state": state})
 
     async def _async_start_locked(self) -> None:
+        # Forget the previous verdict so callers cannot read it as the outcome
+        # of an attempt that never reached the broker.
+        self._last_connack_rc = None
+
         # CRITICAL: Don't start MQTT if bootstrap is still in progress
         # Blocks reconnects, retries, and credential updates until bootstrap finishes
         if getattr(self, "_bootstrap_in_progress", False):
@@ -373,6 +380,15 @@ class CardataStreamManager:
     @property
     def client(self) -> mqtt.Client | None:
         return self._client
+
+    @property
+    def credentials_refused(self) -> bool:
+        """Tell whether the broker rejected the credentials of the last attempt.
+
+        False when the attempt failed short of a CONNACK, so a timeout or a
+        TLS problem is never mistaken for a rejection.
+        """
+        return self._last_connack_rc in (4, 5)
 
     def set_message_callback(self, callback: Callable[[dict], Awaitable[None]]) -> None:
         self._message_callback = callback
@@ -557,6 +573,7 @@ class CardataStreamManager:
     def _handle_connect(self, client: mqtt.Client, userdata, flags, rc) -> None:
         # Signal the connect event for synchronous waiters (used during initial connection)
         self._connect_rc = rc
+        self._last_connack_rc = rc
         if self._connect_event is not None:
             self._connect_event.set()
 

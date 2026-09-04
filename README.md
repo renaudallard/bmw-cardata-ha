@@ -215,6 +215,8 @@ Or:
 ### Reauthorization
 If BMW rejects the token (e.g. because the portal revoked it), please use the Configure > Start Device Authorization Again tool
 
+When BMW refuses the stream using tokens it has just issued, the integration reports that instead of asking you to reauthorize, because the credentials are clearly accepted. That usually means something else holds the one stream connection your account gets, so see the custom MQTT broker section below. If nothing else is connected, the client ID is probably missing the `cardata:streaming:read` scope, which does need a new device authorization.
+
 ### Custom MQTT Broker (optional)
 
 You can switch the live stream from BMW's MQTT endpoint to your own broker (for example via [bmw-mqtt-bridge](https://dj0abr.github.io/bmw-mqtt-bridge/)).
