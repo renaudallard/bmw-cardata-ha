@@ -358,7 +358,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     entity_registry = async_get(hass)
 
     for entity_entry in async_entries_for_config_entry(entity_registry, entry.entry_id):
-        if entity_entry.domain != "binary_sensor" or entity_entry.disabled_by is not None:
+        if entity_entry.domain not in ("binary_sensor", "sensor") or entity_entry.disabled_by is not None:
             continue
 
         unique_id = entity_entry.unique_id
@@ -366,6 +366,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             continue
 
         vin, descriptor = unique_id.split("_", 1)
+
+        if entity_entry.domain == "sensor":
+            # An install that predates these binary sensors has no binary_sensor
+            # entry to restore from, and coordinator.data is still empty this
+            # early on a reload, so the string sensor is the only trace an
+            # opening descriptor leaves behind.
+            if descriptor in OPENING_STATUS_DESCRIPTORS:
+                ensure_entity(vin, descriptor, assume_binary=True)
+            continue
+
         ensure_entity(vin, descriptor_from_unique_id(descriptor), assume_binary=True)
 
     # Add binary sensors from coordinator state
