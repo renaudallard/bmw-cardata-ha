@@ -143,6 +143,9 @@ class CardataStreamManager:
         # Threading event for connection synchronization (avoids global socket timeout)
         self._connect_event: threading.Event | None = None
         self._connect_rc: int | None = None
+        # CONNACK code of the last attempt, set only from the connect callback
+        # so it always holds a broker verdict and never a socket error code.
+        self._last_connack_rc: int | None = None
         # Circuit breaker persistence serialization
         self._persist_lock = asyncio.Lock()
 
@@ -227,6 +230,10 @@ class CardataStreamManager:
                 await async_update_entry_data(self.hass, entry, {"circuit_breaker_state": state})
 
     async def _async_start_locked(self) -> None:
+        # Forget the previous verdict so callers cannot read it as the outcome
+        # of an attempt that never reached the broker.
+        self._last_connack_rc = None
+
         # CRITICAL: Don't start MQTT if bootstrap is still in progress
         # Blocks reconnects, retries, and credential updates until bootstrap finishes
         if getattr(self, "_bootstrap_in_progress", False):
@@ -335,22 +342,28 @@ class CardataStreamManager:
         self._intentional_disconnect = True
         self._connection_state = ConnectionState.DISCONNECTING
 
-        disconnect_future: asyncio.Future[None] | None = None
         client = self._client
         self._client = None
         if client is not None:
             loop = asyncio.get_running_loop()
-            disconnect_future = loop.create_future()
+            disconnect_future: asyncio.Future[None] = loop.create_future()
             self._disconnect_future = disconnect_future
             userdata = getattr(client, "_userdata", None)
             if isinstance(userdata, dict):
                 userdata["reconnect"] = False
             try:
-                client.disconnect()
+                rc = client.disconnect()
             except Exception as err:  # pragma: no cover - defensive logging
                 if debug_enabled():
                     _LOGGER.debug("Error disconnecting BMW MQTT client: %s", err)
-            if disconnect_future is not None:
+                rc = mqtt.MQTT_ERR_NO_CONN
+            if rc == mqtt.MQTT_ERR_NO_CONN:
+                # The socket was already gone, usually because we are cleaning
+                # up after a connection loss. No DISCONNECT went out and
+                # on_disconnect has already fired, so nothing will ever
+                # complete the future and waiting just burns the timeout.
+                self._disconnect_future = None
+            else:
                 try:
                     await asyncio.wait_for(disconnect_future, timeout=5)
                 except TimeoutError:
@@ -367,6 +380,15 @@ class CardataStreamManager:
     @property
     def client(self) -> mqtt.Client | None:
         return self._client
+
+    @property
+    def credentials_refused(self) -> bool:
+        """Tell whether the broker rejected the credentials of the last attempt.
+
+        False when the attempt failed short of a CONNACK, so a timeout or a
+        TLS problem is never mistaken for a rejection.
+        """
+        return self._last_connack_rc in (4, 5)
 
     def set_message_callback(self, callback: Callable[[dict], Awaitable[None]]) -> None:
         self._message_callback = callback
@@ -419,12 +441,18 @@ class CardataStreamManager:
             topic = f"{self._gcid}/+"
             client_id = self._gcid
 
+        # reconnect_on_failure=False: after a lost connection paho would run its
+        # own reconnect loop in the network thread, in parallel with ours and
+        # without the backoff, the circuit breaker or the token refresh. Both
+        # would then connect under the same client id, and the broker drops the
+        # older session whenever the newer one arrives.
         client = mqtt.Client(
             client_id=client_id,
             clean_session=True,
             userdata={"topic": topic},
             protocol=mqtt.MQTTv311,
             transport="tcp",
+            reconnect_on_failure=False,
         )
         if debug_enabled():
             _LOGGER.debug(
@@ -545,6 +573,7 @@ class CardataStreamManager:
     def _handle_connect(self, client: mqtt.Client, userdata, flags, rc) -> None:
         # Signal the connect event for synchronous waiters (used during initial connection)
         self._connect_rc = rc
+        self._last_connack_rc = rc
         if self._connect_event is not None:
             self._connect_event.set()
 
@@ -609,6 +638,13 @@ class CardataStreamManager:
                         )
                     return
 
+                if self._status_callback:
+                    self._run_coro_safe(
+                        cast(
+                            Coroutine[Any, Any, None],
+                            self._status_callback("connection_failed", mqtt.connack_string(rc).rstrip(".")),
+                        )
+                    )
                 stream_reconnect.schedule_retry(self, 10)
                 return
 
@@ -702,13 +738,9 @@ class CardataStreamManager:
             _LOGGER.exception("Unexpected error in MQTT message handler: %s", err)
 
     def _handle_disconnect(self, client: mqtt.Client, userdata, rc) -> None:
-        reason = {
-            1: "Unacceptable protocol version",
-            2: "Identifier rejected",
-            3: "Server unavailable",
-            4: "Bad username or password",
-            5: "Not authorized",
-        }.get(rc, "Unknown")
+        # The disconnect rc is a paho MQTT_ERR_* code, not a CONNACK code, so
+        # let paho name it rather than reading it as a connection return code.
+        reason = mqtt.error_string(rc).rstrip(".")
 
         # If _connect_event is still pending, the TCP connection failed before
         # the MQTT handshake completed (on_connect was never called).
@@ -719,25 +751,27 @@ class CardataStreamManager:
 
         # Only log if not an intentional disconnect
         if not self._intentional_disconnect:
-            if rc == 0:
+            if rc == mqtt.MQTT_ERR_SUCCESS:
                 # clean disconnect
                 if debug_enabled():
                     _LOGGER.debug("BMW MQTT disconnected cleanly")
-            elif rc == 7:
+            elif rc in (mqtt.MQTT_ERR_CONN_LOST, mqtt.MQTT_ERR_KEEPALIVE):
+                # The broker or the network dropped the socket. We reconnect,
+                # so this is not worth alarming the user about.
                 if debug_enabled():
-                    _LOGGER.debug("BMW MQTT disconnected due to client inactivity")
-            elif rc in (4, 5):
-                _LOGGER.debug("Authorized BMW MQTT disconnect rc=%s (%s)", rc, reason)
+                    _LOGGER.debug("BMW MQTT connection lost (%s)", reason)
+            elif rc == mqtt.MQTT_ERR_CONN_REFUSED:
+                if debug_enabled():
+                    _LOGGER.debug("BMW MQTT refused the connection; handled by the connect callback")
             else:
                 _LOGGER.warning("BMW MQTT disconnected rc=%s (%s)", rc, reason)
         elif debug_enabled():
             _LOGGER.debug("BMW MQTT intentional disconnect rc=%s", rc)
 
-        previous_disconnect = self._last_disconnect
         self._last_disconnect = time.monotonic()
 
-        # Update connection state — skip if already FAILED (set by _handle_connect
-        # for rc=4/5) to prevent double-counting in circuit breaker
+        # Update connection state - skip if already FAILED (set by _handle_connect
+        # for a refused CONNACK) to prevent double-counting in circuit breaker
         if self._connection_state not in (ConnectionState.DISCONNECTING, ConnectionState.FAILED):
             self._connection_state = ConnectionState.DISCONNECTED
             if rc != 0:
@@ -761,37 +795,16 @@ class CardataStreamManager:
             should_reconnect = userdata.get("reconnect", True)
             userdata["reconnect"] = True
 
-        if rc in (4, 5):
-            if self._custom_broker:
-                # Custom broker: just reconnect, don't trigger BMW reauth
-                if self._custom_auth_retry_blocked:
-                    reason = "Custom MQTT auth failed repeatedly; automatic retries stopped"
-                    if self._status_callback:
-                        self._run_coro_safe(
-                            cast(Coroutine[Any, Any, None], self._status_callback("unauthorized_blocked", reason))
-                        )
-                    return
-                if should_reconnect and not self._circuit_breaker.check():
-                    self._run_coro_safe(stream_reconnect.async_reconnect(self))
-                if self._status_callback:
-                    self._run_coro_safe(
-                        cast(Coroutine[Any, Any, None], self._status_callback("connection_failed", reason))
-                    )
-                return
-            now = time.monotonic()
-            if rc == 5 and previous_disconnect is not None and now - previous_disconnect < 10:
-                if debug_enabled():
-                    _LOGGER.debug("Ignoring transient MQTT rc=5; scheduling retry instead")
-                stream_reconnect.schedule_retry(self, 3)
-                return
-            self._run_coro_safe(stream_reconnect.handle_unauthorized(self))
-            if self._status_callback:
-                self._run_coro_safe(cast(Coroutine[Any, Any, None], self._status_callback("unauthorized", reason)))
-        else:
-            if should_reconnect and not self._circuit_breaker.check():
-                self._run_coro_safe(stream_reconnect.async_reconnect(self))
-            if self._status_callback:
-                self._run_coro_safe(cast(Coroutine[Any, Any, None], self._status_callback("disconnected", reason)))
+        # A refused connection always reaches _handle_connect first, carrying
+        # the CONNACK code that says why. That callback owns the recovery, so
+        # starting a second one from here only fights with it.
+        if rc == mqtt.MQTT_ERR_CONN_REFUSED:
+            return
+
+        if should_reconnect and not self._circuit_breaker.check():
+            self._run_coro_safe(stream_reconnect.async_reconnect(self))
+        if self._status_callback:
+            self._run_coro_safe(cast(Coroutine[Any, Any, None], self._status_callback("disconnected", reason)))
 
     def set_credentials(
         self,

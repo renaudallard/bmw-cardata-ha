@@ -62,7 +62,7 @@ Please try to post only issues relevant to the integration itself on the [Issues
 
 ### Configure button actions
 On the integration main page, there is now a "Configure" button. You can use it to:
-- **Refresh authentication tokens** (will reload integration, might also need HA restart in some problem cases)
+- **Refresh authentication tokens** (always requests a new set of tokens from BMW, even when the current ones have not expired yet; will reload integration, might also need HA restart in some problem cases)
 - **Start device authorization again** (redo the whole auth flow)
 - **MQTT Broker** (switch stream source to a custom broker, including TLS mode and topic prefix)
 - **Reset telemetry container** (delete and recreate the BMW telemetry container)
@@ -215,9 +215,12 @@ Or:
 ### Reauthorization
 If BMW rejects the token (e.g. because the portal revoked it), please use the Configure > Start Device Authorization Again tool
 
+When BMW refuses the stream using tokens it has just issued, the integration reports that instead of asking you to reauthorize, because the credentials are clearly accepted. That usually means something else holds the one stream connection your account gets, so see the custom MQTT broker section below. If nothing else is connected, the client ID is probably missing the `cardata:streaming:read` scope, which does need a new device authorization.
+
 ### Custom MQTT Broker (optional)
 
 You can switch the live stream from BMW's MQTT endpoint to your own broker (for example via [bmw-mqtt-bridge](https://dj0abr.github.io/bmw-mqtt-bridge/)).
+BMW only accepts one active stream connection per account, so anything else already connected with the same credentials (a second Home Assistant instance, evcc, or a bridge) makes BMW refuse this one with `Not authorized` even though the token is valid. Letting a single bridge consume the BMW stream and pointing every consumer at your own broker avoids that.
 BMW authorization is still required; only stream transport changes.
 Expected topic format is `<topic_prefix><VIN>` (default prefix `bmw/`) and payload JSON must include `vin` and `data`.
 Configure it in Home Assistant via **Settings -> Devices & Services -> BMW CarData -> Configure -> MQTT Broker**.

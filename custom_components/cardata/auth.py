@@ -148,8 +148,13 @@ async def refresh_tokens_for_entry(
     manager: CardataStreamManager,
     container_manager: CardataContainerManager | None = None,
     buffer_seconds: int = TOKEN_EXPIRY_BUFFER_SECONDS,
+    force: bool = False,
 ) -> None:
     """Refresh tokens and update entry data.
+
+    Set force when the tokens have been rejected by BMW. The local expiry
+    data only says when we expect the token to die, it does not say whether
+    BMW still accepts it, so the expiry check has to be skipped in that case.
 
     CRITICAL: This function ONLY handles token refresh.
     Container management is handled separately to avoid API hammering.
@@ -174,10 +179,11 @@ async def refresh_tokens_for_entry(
         # Lock is now acquired - use try/finally immediately to ensure release
         try:
             # double check if token still needs refresh
-            expired, seconds_left = is_token_expired(entry, buffer_seconds)
-            if not expired:
-                _LOGGER.debug("Token was refreshed by another caller; skipping (valid for %s seconds)", seconds_left)
-                return
+            if not force:
+                expired, seconds_left = is_token_expired(entry, buffer_seconds)
+                if not expired:
+                    _LOGGER.debug("Token does not need a refresh yet; skipping (valid for %s seconds)", seconds_left)
+                    return
             await _do_token_refresh(entry, session, manager, container_manager, hass)
         finally:
             lock.release()
@@ -253,6 +259,44 @@ async def _do_token_refresh(
         runtime.reauth_pending = False
 
 
+def _report_connection_conflict(
+    hass: HomeAssistant,
+    runtime: CardataRuntimeData,
+    entry: ConfigEntry,
+    notification_id: str,
+) -> None:
+    """Tell the user their credentials are fine and the stream slot is not.
+
+    BMW just issued these tokens and then refused the stream with them, so
+    another client is holding the one connection the account gets, or this
+    client was never granted the streaming scope. Reauthorising helps with
+    the second case only, so say so instead of demanding it.
+    """
+    runtime.connection_conflict = True
+    runtime.reauth_pending = False
+    _LOGGER.error(
+        "BMW refused the data stream for entry %s with tokens it had just issued, so the "
+        "credentials are not the problem. BMW allows one stream connection per account: "
+        "disconnect whatever else is using it, or feed this integration from your own MQTT "
+        "broker. If nothing else is connected, the client ID may be missing the "
+        "cardata:streaming:read scope, which needs a new device authorization.",
+        entry.entry_id,
+    )
+    persistent_notification.async_create(
+        hass,
+        "BMW refused the data stream using tokens it had just issued, so your credentials "
+        "are not the problem.\n\n"
+        "BMW only allows one stream connection per account. Disconnect whatever else is "
+        "using it (a second Home Assistant, evcc, or an MQTT bridge), or point this "
+        "integration at your own broker via Configure > MQTT Broker.\n\n"
+        "If nothing else is connected, your client ID may be missing the "
+        "cardata:streaming:read scope. In that case use Configure > Start Device "
+        "Authorization Again.",
+        title="Bmw Cardata",
+        notification_id=notification_id,
+    )
+
+
 async def handle_stream_error(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -293,6 +337,21 @@ async def handle_stream_error(
         try:
             now = time.time()
 
+            if runtime.connection_conflict:
+                # Already diagnosed as something other than our credentials, so
+                # a refresh would not change BMW's answer. Keep reconnecting
+                # anyway: getting in is the only way we learn the connection
+                # has been freed, and nothing else would clear the verdict.
+                _LOGGER.debug(
+                    "Stream still refused for entry %s with credentials BMW accepts; retrying without a refresh",
+                    entry.entry_id,
+                )
+                try:
+                    await runtime.stream.async_start()
+                except Exception as start_err:
+                    _LOGGER.debug("BMW still refuses the stream for entry %s: %s", entry.entry_id, start_err)
+                return
+
             if runtime.reauth_pending:
                 _LOGGER.debug(
                     "Reauth pending for entry %s after failed refresh; starting flow",
@@ -303,11 +362,16 @@ async def handle_stream_error(
                 try:
                     _LOGGER.debug("Attempting token refresh after auth failure")
 
+                    # BMW refused the credentials we hold, so refresh them even
+                    # when they still look valid here. Without force the refresh
+                    # is skipped for the whole 45 minutes between two proactive
+                    # refreshes and we reconnect with the same rejected token.
                     await refresh_tokens_for_entry(
                         entry,
                         runtime.session,
                         runtime.stream,
                         runtime.container_manager,
+                        force=True,
                     )
 
                     # Success! Reset the unauthorized flags
@@ -323,6 +387,9 @@ async def handle_stream_error(
                     try:
                         await runtime.stream.async_start()
                     except Exception as start_err:
+                        if runtime.stream.credentials_refused:
+                            _report_connection_conflict(hass, runtime, entry, notification_id)
+                            return
                         _LOGGER.warning("MQTT reconnect after credential refresh failed: %s", start_err)
                     return
 
@@ -385,9 +452,10 @@ async def handle_stream_error(
             runtime._handling_unauthorized = False
 
     elif reason == "recovered":
-        if runtime.reauth_in_progress:
+        if runtime.reauth_in_progress or runtime.connection_conflict:
             runtime.reauth_in_progress = False
-            _LOGGER.debug("BMW stream connection restored; dismissing reauth notification")
+            runtime.connection_conflict = False
+            _LOGGER.debug("BMW stream connection restored; dismissing notification")
             persistent_notification.async_dismiss(hass, notification_id)
             if runtime.reauth_flow_id:
                 with suppress(Exception):
@@ -403,11 +471,14 @@ async def async_manual_refresh_tokens(hass: HomeAssistant, entry: ConfigEntry) -
     if runtime is None:
         raise CardataAuthError("Integration runtime not ready")
 
+    # The user asked for new tokens, so give them new tokens instead of
+    # silently keeping the ones that are already in trouble.
     await refresh_tokens_for_entry(
         entry,
         runtime.session,
         runtime.stream,
         runtime.container_manager,
+        force=True,
     )
 
 
@@ -619,6 +690,9 @@ async def async_token_refresh_loop(hass: HomeAssistant, entry_id: str) -> None:
                     # Re-fetch entry in case it changed during token refresh
                     reauth_entry = hass.config_entries.async_get_entry(entry_id)
                     if reauth_entry:
+                        # BMW has stopped issuing tokens, so whatever we concluded
+                        # from it still accepting them no longer holds.
+                        runtime.connection_conflict = False
                         await handle_stream_error(hass, reauth_entry, "unauthorized")
                     # Continue loop but with max backoff until reauth succeeds
                     # The reauth flow will update credentials and reset state

@@ -71,6 +71,9 @@ class CardataRuntimeData:
     last_reauth_attempt: float = 0.0
     last_refresh_attempt: float = 0.0
     reauth_pending: bool = False
+    # Set when BMW refuses the stream with credentials it has just issued,
+    # which means the credentials are not what it objects to.
+    connection_conflict: bool = False
     _handling_unauthorized: bool = False
     soc_store: Store | None = None
 

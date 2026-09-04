@@ -41,6 +41,22 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
+def _reconnect_abandoned(manager: CardataStreamManager) -> bool:
+    """Tell whether a reconnect that slept should give up.
+
+    An async_stop() or an entry unload can happen while we wait, and the
+    config entry may be gone by the time we wake up.
+    """
+    if manager._intentional_disconnect:
+        return True
+    if manager._entry_id:
+        from .const import DOMAIN
+
+        if manager._entry_id not in manager.hass.data.get(DOMAIN, {}):
+            return True
+    return False
+
+
 async def async_reconnect(manager: CardataStreamManager) -> None:
     """Handle MQTT reconnection with token refresh and backoff."""
     from .stream import ConnectionState
@@ -60,12 +76,10 @@ async def async_reconnect(manager: CardataStreamManager) -> None:
             await manager._status_callback("connected", None)
         return
 
+    # Tear the old client down before looking at the circuit breaker. Giving up
+    # here without stopping it leaves a client we no longer track, and paho
+    # keeps its own network thread alive on the socket.
     try:
-        if manager._circuit_breaker.check():
-            if debug_enabled():
-                _LOGGER.debug("Skipping MQTT reconnect due to open circuit breaker")
-            return
-
         await manager._async_stop_locked()
     finally:
         manager._connect_lock.release()
@@ -76,6 +90,18 @@ async def async_reconnect(manager: CardataStreamManager) -> None:
     # guard will detect it.  Safe because the old client is already gone
     # (no more MQTT callbacks will check the flag).
     manager._intentional_disconnect = False
+
+    if manager._circuit_breaker.check():
+        # The breaker only resets when something checks it again, and the
+        # scheduled retries refuse to run while it is open, so returning here
+        # would leave the stream down until the next token refresh. Wait the
+        # cooldown out instead.
+        cooldown = (manager._circuit_breaker.remaining_seconds or 0) + 1
+        if debug_enabled():
+            _LOGGER.debug("Waiting %s seconds for the MQTT circuit breaker to reset", cooldown)
+        await asyncio.sleep(cooldown)
+        if _reconnect_abandoned(manager):
+            return
 
     # Phase 2: Token refresh (no lock needed - client is stopped)
     # Skip token refresh when using a custom MQTT broker (no BMW auth needed)
@@ -113,14 +139,8 @@ async def async_reconnect(manager: CardataStreamManager) -> None:
 
     await asyncio.sleep(wait_time)
 
-    # Re-check after sleep — async_stop or entry unload may have occurred
-    if manager._intentional_disconnect:
+    if _reconnect_abandoned(manager):
         return
-    if manager._entry_id:
-        from .const import DOMAIN
-
-        if manager._entry_id not in manager.hass.data.get(DOMAIN, {}):
-            return
 
     # Phase 4: Start the client (requires lock)
     try:
@@ -191,43 +211,47 @@ async def handle_unauthorized(manager: CardataStreamManager) -> None:
         # double-bump.
         manager._reconnect_backoff = min(manager._reconnect_backoff * 2, manager._max_backoff)
 
-        try:
-            unauthorized_protection = None
-            if manager._entry_id:
-                from .const import DOMAIN
+        unauthorized_protection = None
+        if manager._entry_id:
+            from .const import DOMAIN
 
-                runtime = manager.hass.data.get(DOMAIN, {}).get(manager._entry_id)
-                if runtime:
-                    unauthorized_protection = runtime.unauthorized_protection
+            runtime = manager.hass.data.get(DOMAIN, {}).get(manager._entry_id)
+            if runtime:
+                unauthorized_protection = runtime.unauthorized_protection
 
-            if unauthorized_protection:
-                can_retry, block_reason = unauthorized_protection.can_retry()
-                if not can_retry:
-                    blocked = True
+        if unauthorized_protection:
+            can_retry, block_reason = unauthorized_protection.can_retry()
+            if not can_retry:
+                blocked = True
 
-            if not blocked:
-                # Update flags while holding the lock to prevent races
-                manager._awaiting_new_credentials = True
-                should_notify = not manager._reauth_notified
-                if should_notify:
-                    manager._reauth_notified = True
-        finally:
-            manager._unauthorized_retry_in_progress = False
+        if not blocked:
+            # Update flags while holding the lock to prevent races
+            manager._awaiting_new_credentials = True
+            should_notify = not manager._reauth_notified
+            if should_notify:
+                manager._reauth_notified = True
 
-    # Perform all callbacks outside the lock to avoid long lock holds
-    if blocked:
-        _LOGGER.error("BMW MQTT unauthorized retry blocked: %s", block_reason)
-        await manager.async_stop()
+    # Perform all callbacks outside the lock to avoid long lock holds. The
+    # in-progress flag stays set until they are done, otherwise it only spans
+    # the few lines above and a second refusal arriving while we still refresh
+    # the token and restart the stream starts the whole handling again.
+    try:
+        if blocked:
+            _LOGGER.error("BMW MQTT unauthorized retry blocked: %s", block_reason)
+            await manager.async_stop()
+            if manager._status_callback:
+                await manager._status_callback("unauthorized_blocked", block_reason)
+            return
+
+        if should_notify:
+            await notify_error(manager, "unauthorized")
+        else:
+            await manager.async_stop()
         if manager._status_callback:
-            await manager._status_callback("unauthorized_blocked", block_reason)
-        return
-
-    if should_notify:
-        await notify_error(manager, "unauthorized")
-    else:
-        await manager.async_stop()
-    if manager._status_callback:
-        await manager._status_callback("unauthorized", "MQTT authentication failed")
+            await manager._status_callback("unauthorized", "MQTT authentication failed")
+    finally:
+        async with manager._unauthorized_lock:
+            manager._unauthorized_retry_in_progress = False
 
 
 async def notify_error(manager: CardataStreamManager, reason: str) -> None:
