@@ -177,7 +177,13 @@ class TestOpeningDescriptorTables:
         titles = list(OPENING_STATUS_TITLES.values())
         assert len(titles) == len(set(titles))
 
-    def test_every_descriptor_is_reachable_from_a_trigger(self):
-        """Home Assistant ships trigger integrations for window and door, but not opening."""
-        reachable = {BinarySensorDeviceClass.WINDOW, BinarySensorDeviceClass.DOOR}
-        assert set(OPENING_STATUS_DESCRIPTORS.values()) <= reachable
+    def test_every_descriptor_uses_a_class_with_a_trigger_integration(self):
+        """Home Assistant ships a window and a door trigger integration, but no opening one.
+
+        binary_sensor's device triggers do cover the opening device class, so
+        the point is narrower than it looks: a window.opened trigger targets
+        binary_sensor entities classified as window, and nothing targets one
+        classified as opening.
+        """
+        with_trigger_integration = {BinarySensorDeviceClass.WINDOW, BinarySensorDeviceClass.DOOR}
+        assert set(OPENING_STATUS_DESCRIPTORS.values()) <= with_trigger_integration
