@@ -68,14 +68,20 @@ LOCATION_LONGITUDE_DESCRIPTOR = "vehicle.cabin.infotainment.navigation.currentLo
 LOCATION_HEADING_DESCRIPTOR = "vehicle.cabin.infotainment.navigation.currentLocation.heading"
 LOCATION_ALTITUDE_DESCRIPTOR = "vehicle.cabin.infotainment.navigation.currentLocation.altitude"
 
-# Window descriptors for sensor icons
-WINDOW_DESCRIPTORS = (
+CABIN_WINDOW_STATUS_DESCRIPTORS = (
     "vehicle.cabin.window.row1.driver.status",
     "vehicle.cabin.window.row1.passenger.status",
     "vehicle.cabin.window.row2.driver.status",
     "vehicle.cabin.window.row2.passenger.status",
-    "vehicle.body.trunk.window.isOpen",
 )
+
+# Windows and the sunroof report an enum string, so they land on the sensor
+# platform. The binary sensor platform derives an open/closed entity from each
+# one and the string sensor steps out of the way.
+OPENING_STATUS_DESCRIPTORS = CABIN_WINDOW_STATUS_DESCRIPTORS + ("vehicle.cabin.sunroof.status",)
+
+# Window descriptors for sensor icons
+WINDOW_DESCRIPTORS = CABIN_WINDOW_STATUS_DESCRIPTORS + ("vehicle.body.trunk.window.isOpen",)
 
 # Battery descriptors for device class detection
 BATTERY_DESCRIPTORS = {

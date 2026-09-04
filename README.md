@@ -230,6 +230,7 @@ Configure it in Home Assistant via **Settings -> Devices & Services -> BMW CarDa
 - Each VIN becomes a device in HA (`VIN` pulled from CarData).
 - Sensors/binary sensors are auto-created and named from descriptors (e.g. `Cabin Door Row1 Driver Is Open`).
 - The device tracker (location entity) is restored from the entity registry on restart, so it keeps its last known position even before MQTT data arrives.
+- The windows and the sunroof get a binary sensor with the `window` device class, which reports open or closed and can drive a `window.opened` trigger. The string sensor that reports the raw BMW enum (`CLOSED`, `INTERMEDIATE`, `OPEN`) is still there but hidden on a new install, so unhide it from the entity settings if you want the intermediate position.
 - Additional attributes include the source timestamp.
 - All numeric sensors declare `suggested_display_precision`, so unit conversions (e.g. km to miles) display clean rounded values in standard HA cards and the built-in vehicle card. You can override the display unit per entity via the gear icon in the entity settings, or switch your HA unit system to imperial for a global change.
 

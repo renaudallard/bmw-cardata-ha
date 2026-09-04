@@ -62,6 +62,7 @@ from .const import (
     LOCATION_LATITUDE_DESCRIPTOR,
     LOCATION_LONGITUDE_DESCRIPTOR,
     MAGIC_SOC_DESCRIPTOR,
+    OPENING_STATUS_DESCRIPTORS,
     PREDICTED_SOC_DESCRIPTOR,
     WINDOW_DESCRIPTORS,
 )
@@ -105,6 +106,14 @@ class CardataSensor(CardataEntity, RestoreEntity, SensorEntity):
             LOCATION_HEADING_DESCRIPTOR,
         ):
             self._attr_entity_registry_enabled_default = False
+
+        # The binary sensor built from this descriptor answers the open or
+        # closed question most people have, so the enum string starts hidden on
+        # a fresh install. It keeps its state, so the vehicle card and any
+        # automation reading it carry on working, and it can be unhidden from
+        # the entity settings.
+        if descriptor in OPENING_STATUS_DESCRIPTORS:
+            self._attr_entity_registry_visible_default = False
 
         if descriptor in (PREDICTED_SOC_DESCRIPTOR, MAGIC_SOC_DESCRIPTOR):
             self._attr_suggested_display_precision = 1

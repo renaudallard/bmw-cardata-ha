@@ -29,14 +29,40 @@ import pytest
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 
 from custom_components.cardata.binary_sensor import (
-    OPENING_STATUS_DESCRIPTORS,
     OPENING_STATUS_TITLES,
+    OPENING_UNIQUE_ID_SUFFIX,
+    CardataBinarySensor,
     coerce_binary_value,
+    descriptor_from_unique_id,
     opening_status_to_bool,
 )
+from custom_components.cardata.const import OPENING_STATUS_DESCRIPTORS
+from custom_components.cardata.descriptor_state import DescriptorState
+from custom_components.cardata.sensor import CardataSensor
 
 WINDOW_DESCRIPTOR = "vehicle.cabin.window.row1.driver.status"
 DOOR_DESCRIPTOR = "vehicle.cabin.door.row1.driver.isOpen"
+TAILGATE_DESCRIPTOR = "vehicle.body.trunk.window.isOpen"
+VIN = "WBA00000000000001"
+
+
+class FakeCoordinator:
+    """The slice of the coordinator a binary sensor reads from."""
+
+    def __init__(self) -> None:
+        self.device_metadata: dict[str, dict[str, str]] = {}
+        self.names: dict[str, str] = {}
+        self.value: object = None
+
+    def get_state(self, vin: str, descriptor: str) -> DescriptorState:
+        return DescriptorState(value=self.value, unit=None, timestamp=None)
+
+
+class OfflineSensor(CardataBinarySensor):
+    """A sensor that skips the Home Assistant state write."""
+
+    def schedule_update_ha_state(self, force_refresh: bool = False) -> None:
+        return None
 
 
 class TestOpeningStatusToBool:
@@ -85,8 +111,60 @@ class TestCoerceBinaryValue:
         """Existing behaviour is preserved: non-opening descriptors stay boolean-only."""
         assert coerce_binary_value(DOOR_DESCRIPTOR, "OPEN") is None
 
+    def test_tailgate_window_takes_either_form(self):
+        """BMW types it boolean but documents the window value range for it."""
+        assert coerce_binary_value(TAILGATE_DESCRIPTOR, True) is True
+        assert coerce_binary_value(TAILGATE_DESCRIPTOR, "OPEN") is True
+        assert coerce_binary_value(TAILGATE_DESCRIPTOR, "CLOSED") is False
+        assert coerce_binary_value(TAILGATE_DESCRIPTOR, "INVALID") is None
+
     def test_unknown_descriptor_rejects_string(self):
         assert coerce_binary_value("vehicle.something.else", "OPEN") is None
+
+
+class TestUnusableValue:
+    """Tests for what an opening sensor shows when the value is not usable."""
+
+    def test_invalid_clears_a_known_state(self):
+        """Holding the last value would contradict the string sensor."""
+        coordinator = FakeCoordinator()
+        sensor = OfflineSensor(coordinator, VIN, WINDOW_DESCRIPTOR)
+
+        coordinator.value = "OPEN"
+        sensor._handle_update(VIN, WINDOW_DESCRIPTOR)
+        assert sensor.is_on is True
+
+        coordinator.value = "INVALID"
+        sensor._handle_update(VIN, WINDOW_DESCRIPTOR)
+        assert sensor.is_on is None
+
+    def test_boolean_descriptor_keeps_its_value(self):
+        """Only the opening descriptors change behaviour here."""
+        coordinator = FakeCoordinator()
+        sensor = OfflineSensor(coordinator, VIN, DOOR_DESCRIPTOR)
+
+        coordinator.value = True
+        sensor._handle_update(VIN, DOOR_DESCRIPTOR)
+        assert sensor.is_on is True
+
+        coordinator.value = "nonsense"
+        sensor._handle_update(VIN, DOOR_DESCRIPTOR)
+        assert sensor.is_on is True
+
+
+class TestUniqueIdSuffix:
+    """Tests for the unique_id the derived sensors carry."""
+
+    def test_suffix_maps_back_to_the_descriptor(self):
+        for descriptor in OPENING_STATUS_DESCRIPTORS:
+            assert descriptor_from_unique_id(f"{descriptor}{OPENING_UNIQUE_ID_SUFFIX}") == descriptor
+
+    def test_boolean_descriptor_is_left_alone(self):
+        assert descriptor_from_unique_id(DOOR_DESCRIPTOR) == DOOR_DESCRIPTOR
+
+    def test_unsuffixed_opening_descriptor_is_left_alone(self):
+        """Only the suffixed form belongs to a derived sensor."""
+        assert descriptor_from_unique_id(WINDOW_DESCRIPTOR) == WINDOW_DESCRIPTOR
 
 
 class TestOpeningDescriptorTables:
@@ -100,7 +178,42 @@ class TestOpeningDescriptorTables:
         titles = list(OPENING_STATUS_TITLES.values())
         assert len(titles) == len(set(titles))
 
-    def test_every_descriptor_is_reachable_from_a_trigger(self):
-        """Home Assistant ships trigger integrations for window and door, but not opening."""
-        reachable = {BinarySensorDeviceClass.WINDOW, BinarySensorDeviceClass.DOOR}
-        assert set(OPENING_STATUS_DESCRIPTORS.values()) <= reachable
+    def test_every_descriptor_uses_a_class_with_a_trigger_integration(self):
+        """Home Assistant ships a window and a door trigger integration, but no opening one.
+
+        binary_sensor's device triggers do cover the opening device class, so
+        the point is narrower than it looks: a window.opened trigger targets
+        binary_sensor entities classified as window, and nothing targets one
+        classified as opening.
+        """
+        with_trigger_integration = {BinarySensorDeviceClass.WINDOW, BinarySensorDeviceClass.DOOR}
+        coordinator = FakeCoordinator()
+        for descriptor in OPENING_STATUS_DESCRIPTORS:
+            sensor = OfflineSensor(coordinator, VIN, descriptor)
+            assert sensor.device_class in with_trigger_integration
+
+
+class TestRegistryDefaults:
+    """Tests for which of the two entities a fresh install shows."""
+
+    def test_derived_sensor_is_shown(self):
+        """It is the one that answers open or closed, so it is the one on the device page."""
+        coordinator = FakeCoordinator()
+        for descriptor in OPENING_STATUS_DESCRIPTORS:
+            sensor = OfflineSensor(coordinator, VIN, descriptor)
+            assert sensor.entity_registry_enabled_default is True
+            assert sensor.entity_registry_visible_default is True
+
+    def test_string_sensor_is_hidden(self):
+        """Hidden, not disabled: it keeps its state for the vehicle card and for automations."""
+        coordinator = FakeCoordinator()
+        for descriptor in OPENING_STATUS_DESCRIPTORS:
+            sensor = CardataSensor(coordinator, VIN, descriptor)
+            assert sensor.entity_registry_visible_default is False
+            assert sensor.entity_registry_enabled_default is True
+
+    def test_other_string_sensors_are_left_alone(self):
+        """Only the descriptors with a binary counterpart step out of the way."""
+        coordinator = FakeCoordinator()
+        sensor = CardataSensor(coordinator, VIN, TAILGATE_DESCRIPTOR)
+        assert sensor.entity_registry_visible_default is True
