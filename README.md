@@ -218,6 +218,7 @@ If BMW rejects the token (e.g. because the portal revoked it), please use the Co
 ### Custom MQTT Broker (optional)
 
 You can switch the live stream from BMW's MQTT endpoint to your own broker (for example via [bmw-mqtt-bridge](https://dj0abr.github.io/bmw-mqtt-bridge/)).
+BMW only accepts one active stream connection per account, so anything else already connected with the same credentials (a second Home Assistant instance, evcc, or a bridge) makes BMW refuse this one with `Not authorized` even though the token is valid. Letting a single bridge consume the BMW stream and pointing every consumer at your own broker avoids that.
 BMW authorization is still required; only stream transport changes.
 Expected topic format is `<topic_prefix><VIN>` (default prefix `bmw/`) and payload JSON must include `vin` and `data`.
 Configure it in Home Assistant via **Settings -> Devices & Services -> BMW CarData -> Configure -> MQTT Broker**.
