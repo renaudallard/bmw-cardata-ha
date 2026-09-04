@@ -154,6 +154,9 @@ class CardataBinarySensor(CardataEntity, RestoreEntity, BinarySensorEntity):
         elif descriptor in OPENING_STATUS_DESCRIPTORS:
             self._attr_device_class = OPENING_STATUS_DESCRIPTORS[descriptor]
             self._attr_unique_id = f"{vin}_{descriptor}{OPENING_UNIQUE_ID_SUFFIX}"
+            # These sit next to a string sensor that already reports the same
+            # thing, so they stay out of the way until a user asks for them.
+            self._attr_entity_registry_enabled_default = False
 
     def _format_name(self) -> str:
         """Prefer the binary-specific title for derived opening sensors."""
