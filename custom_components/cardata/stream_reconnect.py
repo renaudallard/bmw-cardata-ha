@@ -194,43 +194,47 @@ async def handle_unauthorized(manager: CardataStreamManager) -> None:
         # double-bump.
         manager._reconnect_backoff = min(manager._reconnect_backoff * 2, manager._max_backoff)
 
-        try:
-            unauthorized_protection = None
-            if manager._entry_id:
-                from .const import DOMAIN
+        unauthorized_protection = None
+        if manager._entry_id:
+            from .const import DOMAIN
 
-                runtime = manager.hass.data.get(DOMAIN, {}).get(manager._entry_id)
-                if runtime:
-                    unauthorized_protection = runtime.unauthorized_protection
+            runtime = manager.hass.data.get(DOMAIN, {}).get(manager._entry_id)
+            if runtime:
+                unauthorized_protection = runtime.unauthorized_protection
 
-            if unauthorized_protection:
-                can_retry, block_reason = unauthorized_protection.can_retry()
-                if not can_retry:
-                    blocked = True
+        if unauthorized_protection:
+            can_retry, block_reason = unauthorized_protection.can_retry()
+            if not can_retry:
+                blocked = True
 
-            if not blocked:
-                # Update flags while holding the lock to prevent races
-                manager._awaiting_new_credentials = True
-                should_notify = not manager._reauth_notified
-                if should_notify:
-                    manager._reauth_notified = True
-        finally:
-            manager._unauthorized_retry_in_progress = False
+        if not blocked:
+            # Update flags while holding the lock to prevent races
+            manager._awaiting_new_credentials = True
+            should_notify = not manager._reauth_notified
+            if should_notify:
+                manager._reauth_notified = True
 
-    # Perform all callbacks outside the lock to avoid long lock holds
-    if blocked:
-        _LOGGER.error("BMW MQTT unauthorized retry blocked: %s", block_reason)
-        await manager.async_stop()
+    # Perform all callbacks outside the lock to avoid long lock holds. The
+    # in-progress flag stays set until they are done, otherwise it only spans
+    # the few lines above and a second refusal arriving while we still refresh
+    # the token and restart the stream starts the whole handling again.
+    try:
+        if blocked:
+            _LOGGER.error("BMW MQTT unauthorized retry blocked: %s", block_reason)
+            await manager.async_stop()
+            if manager._status_callback:
+                await manager._status_callback("unauthorized_blocked", block_reason)
+            return
+
+        if should_notify:
+            await notify_error(manager, "unauthorized")
+        else:
+            await manager.async_stop()
         if manager._status_callback:
-            await manager._status_callback("unauthorized_blocked", block_reason)
-        return
-
-    if should_notify:
-        await notify_error(manager, "unauthorized")
-    else:
-        await manager.async_stop()
-    if manager._status_callback:
-        await manager._status_callback("unauthorized", "MQTT authentication failed")
+            await manager._status_callback("unauthorized", "MQTT authentication failed")
+    finally:
+        async with manager._unauthorized_lock:
+            manager._unauthorized_retry_in_progress = False
 
 
 async def notify_error(manager: CardataStreamManager, reason: str) -> None:
