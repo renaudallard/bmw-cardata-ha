@@ -60,12 +60,10 @@ async def async_reconnect(manager: CardataStreamManager) -> None:
             await manager._status_callback("connected", None)
         return
 
+    # Tear the old client down before looking at the circuit breaker. Giving up
+    # here without stopping it leaves a client we no longer track, and paho
+    # keeps its own network thread alive on the socket.
     try:
-        if manager._circuit_breaker.check():
-            if debug_enabled():
-                _LOGGER.debug("Skipping MQTT reconnect due to open circuit breaker")
-            return
-
         await manager._async_stop_locked()
     finally:
         manager._connect_lock.release()
@@ -76,6 +74,11 @@ async def async_reconnect(manager: CardataStreamManager) -> None:
     # guard will detect it.  Safe because the old client is already gone
     # (no more MQTT callbacks will check the flag).
     manager._intentional_disconnect = False
+
+    if manager._circuit_breaker.check():
+        if debug_enabled():
+            _LOGGER.debug("Skipping MQTT reconnect due to open circuit breaker")
+        return
 
     # Phase 2: Token refresh (no lock needed - client is stopped)
     # Skip token refresh when using a custom MQTT broker (no BMW auth needed)
