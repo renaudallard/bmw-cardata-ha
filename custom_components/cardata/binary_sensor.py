@@ -92,6 +92,11 @@ OPENING_STATUS_TITLES = {
     "vehicle.cabin.sunroof.status": "Sunroof open",
 }
 
+# The string sensor already owns "{vin}_{descriptor}", and frontend_cards maps a
+# unique_id to an entity_id without looking at the domain, so a shared id would
+# hand the vehicle card's window lookups to the binary sensor.
+OPENING_UNIQUE_ID_SUFFIX = "_open"
+
 OPENING_CLOSED_VALUES = frozenset({"CLOSED"})
 OPENING_OPEN_VALUES = frozenset({"OPEN", "INTERMEDIATE"})
 
@@ -120,6 +125,14 @@ def coerce_binary_value(descriptor: str, value: object) -> bool | None:
     return None
 
 
+def descriptor_from_unique_id(unique_id_tail: str) -> str:
+    """Return the descriptor the tail of a binary sensor unique_id refers to."""
+    candidate = unique_id_tail.removesuffix(OPENING_UNIQUE_ID_SUFFIX)
+    if candidate in OPENING_STATUS_DESCRIPTORS:
+        return candidate
+    return unique_id_tail
+
+
 class CardataBinarySensor(CardataEntity, RestoreEntity, BinarySensorEntity):
     """Binary sensor for boolean telematic data."""
 
@@ -137,6 +150,7 @@ class CardataBinarySensor(CardataEntity, RestoreEntity, BinarySensorEntity):
             self._attr_device_class = BinarySensorDeviceClass.WINDOW
         elif descriptor in OPENING_STATUS_DESCRIPTORS:
             self._attr_device_class = OPENING_STATUS_DESCRIPTORS[descriptor]
+            self._attr_unique_id = f"{vin}_{descriptor}{OPENING_UNIQUE_ID_SUFFIX}"
 
     def _format_name(self) -> str:
         """Prefer the binary-specific title for derived opening sensors."""
@@ -352,7 +366,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             continue
 
         vin, descriptor = unique_id.split("_", 1)
-        ensure_entity(vin, descriptor, assume_binary=True)
+        ensure_entity(vin, descriptor_from_unique_id(descriptor), assume_binary=True)
 
     # Add binary sensors from coordinator state
     for vin, descriptor in coordinator.iter_descriptors(binary=True):
