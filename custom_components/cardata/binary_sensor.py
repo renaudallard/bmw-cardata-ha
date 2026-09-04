@@ -100,6 +100,10 @@ OPENING_UNIQUE_ID_SUFFIX = "_open"
 OPENING_CLOSED_VALUES = frozenset({"CLOSED"})
 OPENING_OPEN_VALUES = frozenset({"OPEN", "INTERMEDIATE"})
 
+# BMW types the tailgate window as a boolean but documents the same value range
+# as the windows, so it can turn up in either form.
+OPENING_VALUE_DESCRIPTORS = frozenset(OPENING_STATUS_DESCRIPTORS) | frozenset(WINDOW_BOOL_DESCRIPTORS)
+
 
 def opening_status_to_bool(value: object) -> bool | None:
     """Map a BMW opening enum string onto a binary sensor state.
@@ -120,10 +124,10 @@ def opening_status_to_bool(value: object) -> bool | None:
 
 def coerce_binary_value(descriptor: str, value: object) -> bool | None:
     """Return the boolean a binary sensor must show, or None if unusable."""
-    if descriptor in OPENING_STATUS_DESCRIPTORS:
-        return opening_status_to_bool(value)
     if isinstance(value, bool):
         return value
+    if descriptor in OPENING_VALUE_DESCRIPTORS:
+        return opening_status_to_bool(value)
     return None
 
 
@@ -238,7 +242,7 @@ class CardataBinarySensor(CardataEntity, RestoreEntity, BinarySensorEntity):
             return
 
         new_value = coerce_binary_value(descriptor, state.value)
-        if new_value is None and descriptor not in OPENING_STATUS_DESCRIPTORS:
+        if new_value is None and descriptor not in OPENING_VALUE_DESCRIPTORS:
             # A value that is neither a boolean nor an opening enum belongs to
             # the sensor platform, so leave this entity as it is.
             return

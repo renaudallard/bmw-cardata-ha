@@ -41,6 +41,7 @@ from custom_components.cardata.descriptor_state import DescriptorState
 
 WINDOW_DESCRIPTOR = "vehicle.cabin.window.row1.driver.status"
 DOOR_DESCRIPTOR = "vehicle.cabin.door.row1.driver.isOpen"
+TAILGATE_DESCRIPTOR = "vehicle.body.trunk.window.isOpen"
 VIN = "WBA00000000000001"
 
 
@@ -108,6 +109,13 @@ class TestCoerceBinaryValue:
     def test_boolean_descriptor_rejects_string(self):
         """Existing behaviour is preserved: non-opening descriptors stay boolean-only."""
         assert coerce_binary_value(DOOR_DESCRIPTOR, "OPEN") is None
+
+    def test_tailgate_window_takes_either_form(self):
+        """BMW types it boolean but documents the window value range for it."""
+        assert coerce_binary_value(TAILGATE_DESCRIPTOR, True) is True
+        assert coerce_binary_value(TAILGATE_DESCRIPTOR, "OPEN") is True
+        assert coerce_binary_value(TAILGATE_DESCRIPTOR, "CLOSED") is False
+        assert coerce_binary_value(TAILGATE_DESCRIPTOR, "INVALID") is None
 
     def test_unknown_descriptor_rejects_string(self):
         assert coerce_binary_value("vehicle.something.else", "OPEN") is None
