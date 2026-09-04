@@ -43,7 +43,7 @@ from homeassistant.helpers.entity_registry import (
 )
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, OPENING_STATUS_DESCRIPTORS
 from .coordinator import CardataCoordinator
 from .entity import CardataEntity
 from .runtime import CardataRuntimeData
@@ -71,17 +71,6 @@ DOOR_DESCRIPTORS = (
 WINDOW_BOOL_DESCRIPTORS = ("vehicle.body.trunk.window.isOpen",)
 
 MOTION_DESCRIPTORS = ("vehicle.isMoving",)
-
-# Windows and the sunroof report an enum string rather than a boolean, so they
-# arrive on the sensor platform. They get a binary sensor in addition to it.
-OPENING_STATUS_DESCRIPTORS = {
-    "vehicle.cabin.window.row1.driver.status": BinarySensorDeviceClass.WINDOW,
-    "vehicle.cabin.window.row1.passenger.status": BinarySensorDeviceClass.WINDOW,
-    "vehicle.cabin.window.row2.driver.status": BinarySensorDeviceClass.WINDOW,
-    "vehicle.cabin.window.row2.passenger.status": BinarySensorDeviceClass.WINDOW,
-    # Home Assistant has no trigger integration for the opening device class.
-    "vehicle.cabin.sunroof.status": BinarySensorDeviceClass.WINDOW,
-}
 
 # The string sensor keeps the catalogue title, so the binary sensor needs its own.
 OPENING_STATUS_TITLES = {
@@ -156,7 +145,9 @@ class CardataBinarySensor(CardataEntity, RestoreEntity, BinarySensorEntity):
         elif descriptor in WINDOW_BOOL_DESCRIPTORS:
             self._attr_device_class = BinarySensorDeviceClass.WINDOW
         elif descriptor in OPENING_STATUS_DESCRIPTORS:
-            self._attr_device_class = OPENING_STATUS_DESCRIPTORS[descriptor]
+            # The sunroof is a window too: Home Assistant has no trigger
+            # integration for the opening device class.
+            self._attr_device_class = BinarySensorDeviceClass.WINDOW
             self._attr_unique_id = f"{vin}_{descriptor}{OPENING_UNIQUE_ID_SUFFIX}"
 
     def _format_name(self) -> str:

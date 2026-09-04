@@ -29,7 +29,6 @@ import pytest
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 
 from custom_components.cardata.binary_sensor import (
-    OPENING_STATUS_DESCRIPTORS,
     OPENING_STATUS_TITLES,
     OPENING_UNIQUE_ID_SUFFIX,
     CardataBinarySensor,
@@ -37,7 +36,9 @@ from custom_components.cardata.binary_sensor import (
     descriptor_from_unique_id,
     opening_status_to_bool,
 )
+from custom_components.cardata.const import OPENING_STATUS_DESCRIPTORS
 from custom_components.cardata.descriptor_state import DescriptorState
+from custom_components.cardata.sensor import CardataSensor
 
 WINDOW_DESCRIPTOR = "vehicle.cabin.window.row1.driver.status"
 DOOR_DESCRIPTOR = "vehicle.cabin.door.row1.driver.isOpen"
@@ -186,4 +187,33 @@ class TestOpeningDescriptorTables:
         classified as opening.
         """
         with_trigger_integration = {BinarySensorDeviceClass.WINDOW, BinarySensorDeviceClass.DOOR}
-        assert set(OPENING_STATUS_DESCRIPTORS.values()) <= with_trigger_integration
+        coordinator = FakeCoordinator()
+        for descriptor in OPENING_STATUS_DESCRIPTORS:
+            sensor = OfflineSensor(coordinator, VIN, descriptor)
+            assert sensor.device_class in with_trigger_integration
+
+
+class TestRegistryDefaults:
+    """Tests for which of the two entities a fresh install shows."""
+
+    def test_derived_sensor_is_shown(self):
+        """It is the one that answers open or closed, so it is the one on the device page."""
+        coordinator = FakeCoordinator()
+        for descriptor in OPENING_STATUS_DESCRIPTORS:
+            sensor = OfflineSensor(coordinator, VIN, descriptor)
+            assert sensor.entity_registry_enabled_default is True
+            assert sensor.entity_registry_visible_default is True
+
+    def test_string_sensor_is_hidden(self):
+        """Hidden, not disabled: it keeps its state for the vehicle card and for automations."""
+        coordinator = FakeCoordinator()
+        for descriptor in OPENING_STATUS_DESCRIPTORS:
+            sensor = CardataSensor(coordinator, VIN, descriptor)
+            assert sensor.entity_registry_visible_default is False
+            assert sensor.entity_registry_enabled_default is True
+
+    def test_other_string_sensors_are_left_alone(self):
+        """Only the descriptors with a binary counterpart step out of the way."""
+        coordinator = FakeCoordinator()
+        sensor = CardataSensor(coordinator, VIN, TAILGATE_DESCRIPTOR)
+        assert sensor.entity_registry_visible_default is True
