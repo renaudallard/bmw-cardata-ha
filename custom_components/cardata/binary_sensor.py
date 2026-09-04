@@ -104,7 +104,9 @@ OPENING_OPEN_VALUES = frozenset({"OPEN", "INTERMEDIATE"})
 def opening_status_to_bool(value: object) -> bool | None:
     """Map a BMW opening enum string onto a binary sensor state.
 
-    Unrecognised values return None, which leaves the sensor unchanged.
+    BMW documents CLOSED, INTERMEDIATE, OPEN and INVALID for these
+    descriptors. INVALID and anything unrecognised return None, which the
+    sensor shows as unknown rather than as a guess at open or closed.
     """
     if not isinstance(value, str):
         return None
@@ -137,6 +139,7 @@ class CardataBinarySensor(CardataEntity, RestoreEntity, BinarySensorEntity):
     """Binary sensor for boolean telematic data."""
 
     _attr_should_poll = False
+    _attr_is_on: bool | None = None
 
     def __init__(self, coordinator: CardataCoordinator, vin: str, descriptor: str) -> None:
         super().__init__(coordinator, vin, descriptor)
@@ -235,7 +238,9 @@ class CardataBinarySensor(CardataEntity, RestoreEntity, BinarySensorEntity):
             return
 
         new_value = coerce_binary_value(descriptor, state.value)
-        if new_value is None:
+        if new_value is None and descriptor not in OPENING_STATUS_DESCRIPTORS:
+            # A value that is neither a boolean nor an opening enum belongs to
+            # the sensor platform, so leave this entity as it is.
             return
 
         # SMART FILTERING: Check if sensor's current state differs from new value

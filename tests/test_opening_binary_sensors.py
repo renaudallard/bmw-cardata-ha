@@ -32,13 +32,35 @@ from custom_components.cardata.binary_sensor import (
     OPENING_STATUS_DESCRIPTORS,
     OPENING_STATUS_TITLES,
     OPENING_UNIQUE_ID_SUFFIX,
+    CardataBinarySensor,
     coerce_binary_value,
     descriptor_from_unique_id,
     opening_status_to_bool,
 )
+from custom_components.cardata.descriptor_state import DescriptorState
 
 WINDOW_DESCRIPTOR = "vehicle.cabin.window.row1.driver.status"
 DOOR_DESCRIPTOR = "vehicle.cabin.door.row1.driver.isOpen"
+VIN = "WBA00000000000001"
+
+
+class FakeCoordinator:
+    """The slice of the coordinator a binary sensor reads from."""
+
+    def __init__(self) -> None:
+        self.device_metadata: dict[str, dict[str, str]] = {}
+        self.names: dict[str, str] = {}
+        self.value: object = None
+
+    def get_state(self, vin: str, descriptor: str) -> DescriptorState:
+        return DescriptorState(value=self.value, unit=None, timestamp=None)
+
+
+class OfflineSensor(CardataBinarySensor):
+    """A sensor that skips the Home Assistant state write."""
+
+    def schedule_update_ha_state(self, force_refresh: bool = False) -> None:
+        return None
 
 
 class TestOpeningStatusToBool:
@@ -89,6 +111,36 @@ class TestCoerceBinaryValue:
 
     def test_unknown_descriptor_rejects_string(self):
         assert coerce_binary_value("vehicle.something.else", "OPEN") is None
+
+
+class TestUnusableValue:
+    """Tests for what an opening sensor shows when the value is not usable."""
+
+    def test_invalid_clears_a_known_state(self):
+        """Holding the last value would contradict the string sensor."""
+        coordinator = FakeCoordinator()
+        sensor = OfflineSensor(coordinator, VIN, WINDOW_DESCRIPTOR)
+
+        coordinator.value = "OPEN"
+        sensor._handle_update(VIN, WINDOW_DESCRIPTOR)
+        assert sensor.is_on is True
+
+        coordinator.value = "INVALID"
+        sensor._handle_update(VIN, WINDOW_DESCRIPTOR)
+        assert sensor.is_on is None
+
+    def test_boolean_descriptor_keeps_its_value(self):
+        """Only the opening descriptors change behaviour here."""
+        coordinator = FakeCoordinator()
+        sensor = OfflineSensor(coordinator, VIN, DOOR_DESCRIPTOR)
+
+        coordinator.value = True
+        sensor._handle_update(VIN, DOOR_DESCRIPTOR)
+        assert sensor.is_on is True
+
+        coordinator.value = "nonsense"
+        sensor._handle_update(VIN, DOOR_DESCRIPTOR)
+        assert sensor.is_on is True
 
 
 class TestUniqueIdSuffix:
