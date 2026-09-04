@@ -182,9 +182,7 @@ async def refresh_tokens_for_entry(
             if not force:
                 expired, seconds_left = is_token_expired(entry, buffer_seconds)
                 if not expired:
-                    _LOGGER.debug(
-                        "Token was refreshed by another caller; skipping (valid for %s seconds)", seconds_left
-                    )
+                    _LOGGER.debug("Token does not need a refresh yet; skipping (valid for %s seconds)", seconds_left)
                     return
             await _do_token_refresh(entry, session, manager, container_manager, hass)
         finally:
